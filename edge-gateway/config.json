@@ -1,0 +1,186 @@
+{
+  "device": {
+    "deviceId": "AG221-Edge-01",
+    "site": "example-site",
+    "hw_platform": "atreyo-ag221"
+  },
+
+  "cloud": {
+    "provider": "oracle_mqtt",
+    "_comment": "provider: 'aws_iot' or 'oracle_mqtt'. Switch drivers by provider, not by rewriting the engine.",
+    "aws_iot": {
+      "endpoint": "xxxxxxxx-ats.iot.ap-south-1.amazonaws.com",
+      "port": 8883,
+      "client_id": "AG221-Edge-01",
+      "ca_cert": "/etc/edge-collector/certs/AmazonRootCA1.pem",
+      "client_cert": "/etc/edge-collector/certs/device-cert.pem.crt",
+      "private_key": "/etc/edge-collector/certs/device-private.pem.key",
+      "publish_topic": "iiot/{deviceId}/telemetry"
+    },
+    "oracle_mqtt": {
+      "host": "vpn.example-oracle-host.com",
+      "port": 8883,
+      "username": "AG221-Edge-01",
+      "password_env": "MQTT_PASSWORD",
+      "ca_cert": "/etc/edge-collector/certs/ca.crt",
+      "client_cert": "/etc/edge-collector/certs/client.crt",
+      "private_key": "/etc/edge-collector/certs/client.key",
+      "publish_topic": "iiot/{deviceId}/telemetry"
+    },
+    "keepalive_s": 30,
+    "reconnect_backoff_s": [2, 5, 10, 30, 60]
+  },
+
+  "transmission": {
+    "mode": "hybrid",
+    "_comment": "mode: 'interval' | 'report_by_exception' | 'hybrid' (RBE per-tag + forced heartbeat interval)",
+    "fixed_interval_s": 5,
+    "heartbeat_interval_s": 60,
+    "max_batch_size": 50
+  },
+
+  "buffer": {
+    "path": "/overlay/edge-collector/buffer.db",
+    "max_rows": 200000,
+    "_comment": "~200k rows of small JSON payloads stays well under a few hundred MB on the NAND overlay; oldest rows are dropped past this cap (ring behavior), never blocking live polling",
+    "backfill_batch_size": 20,
+    "backfill_rate_limit_per_s": 10
+  },
+
+  "polling_groups": [
+    {
+      "group_id": "delta_line1_rtu",
+      "protocol": "modbus_rtu",
+      "enabled": true,
+      "interface": {
+        "port": "/dev/ttyS1",
+        "baudrate": 9600,
+        "parity": "N",
+        "stopbits": 1,
+        "bytesize": 8,
+        "timeout_s": 1.0
+      },
+      "poll_interval_s": 2,
+      "devices": [
+        {
+          "unit_id": 1,
+          "tags": [
+            {
+              "name": "Line_Speed_RPM",
+              "address": 100,
+              "register_type": "holding",
+              "data_type": "int16",
+              "multiplier": 1.0,
+              "offset": 0.0,
+              "deadband": 5,
+              "mqtt_key": "Line_Speed_RPM"
+            },
+            {
+              "name": "Motor_Current_A",
+              "address": 102,
+              "register_type": "holding",
+              "data_type": "float32_be",
+              "multiplier": 0.1,
+              "offset": 0.0,
+              "deadband": 0.2,
+              "mqtt_key": "Motor_Current_A"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "group_id": "s7_furnace",
+      "protocol": "s7comm",
+      "enabled": false,
+      "_comment": "disabled by default until libsnap7.so is confirmed compiled for MIPS on this device",
+      "interface": {
+        "ip": "192.168.1.50",
+        "rack": 0,
+        "slot": 1
+      },
+      "poll_interval_s": 2,
+      "tags": [
+        {
+          "name": "Furnace_F1_PV",
+          "db_number": 1,
+          "start_byte": 0,
+          "data_type": "float32_be",
+          "multiplier": 1.0,
+          "offset": 0.0,
+          "deadband": 0.5,
+          "mqtt_key": "Furnace_F1_PV"
+        }
+      ]
+    },
+    {
+      "group_id": "fx5u_mc",
+      "protocol": "mc_protocol_3e",
+      "enabled": false,
+      "interface": {
+        "ip": "192.168.1.60",
+        "port": 5551,
+        "timeout_s": 1.0
+      },
+      "poll_interval_s": 2,
+      "tags": [
+        {
+          "name": "Axis1_Position",
+          "device_code": "D",
+          "device_number": 100,
+          "data_type": "int32",
+          "multiplier": 1.0,
+          "offset": 0.0,
+          "deadband": 1,
+          "mqtt_key": "Axis1_Position"
+        }
+      ]
+    },
+    {
+      "group_id": "opcua_sumitomo",
+      "protocol": "opcua",
+      "enabled": false,
+      "interface": {
+        "endpoint": "opc.tcp://192.168.1.70:4840",
+        "security_policy": "None"
+      },
+      "poll_interval_s": 3,
+      "tags": [
+        {
+          "name": "Injection_Pressure",
+          "node_id": "ns=2;s=Machine.InjectionPressure",
+          "data_type": "float32",
+          "multiplier": 1.0,
+          "offset": 0.0,
+          "deadband": 0.5,
+          "mqtt_key": "Injection_Pressure"
+        }
+      ]
+    },
+    {
+      "group_id": "bacnet_ahu",
+      "protocol": "bacnet_ip",
+      "enabled": false,
+      "_comment": "kept disabled by default -- highest RAM cost of the driver set on a 256MB device",
+      "interface": {
+        "local_ip": "192.168.1.10",
+        "device_instance": 260001,
+        "device_ip": "192.168.1.20"
+      },
+      "poll_interval_s": 5,
+      "tags": [
+        {
+          "name": "AHU1_SupplyTemp",
+          "device_instance": 5001,
+          "object_type": "analogInput",
+          "object_instance": 1,
+          "data_type": "float32",
+          "multiplier": 1.0,
+          "offset": 0.0,
+          "deadband": 0.3,
+          "mqtt_key": "AHU1_SupplyTemp"
+        }
+      ]
+    }
+  ]
+}
