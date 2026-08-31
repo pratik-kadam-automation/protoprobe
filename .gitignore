@@ -1,0 +1,25 @@
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS clutter
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Local scan/config exports you may generate while testing -- not
+# part of the app itself, and can contain real site addresses
+*.json.bak
+multi_plc_config.json
+fx5u_report.json
