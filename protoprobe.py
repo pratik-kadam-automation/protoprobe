@@ -48,6 +48,7 @@ from drivers.mc_driver import MCProtocolDriver
 from drivers.opcua_driver import OPCUADriver
 from drivers.bacnet_driver import BACnetDriver
 from commissioning_screen import CommissioningScreen
+from plc_reader import build_range_tags
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
@@ -246,34 +247,6 @@ def extract_tag_names(expr: str) -> list:
 
 SCAN_BATCH_SIZE = 200
 SCAN_SAFETY_CEILING = 20000
-
-
-def build_range_tags(protocol, params):
-    """params varies by protocol -- see each branch. Returns a list of
-    synthetic int16 tag dicts covering the requested range."""
-    if protocol == "mc_protocol_3e":
-        code = params["device_code"]
-        return [
-            {"name": f"{code}{n}", "device_code": code, "device_number": n,
-             "data_type": "int16", "multiplier": 1.0, "offset": 0.0, "mqtt_key": f"{code}{n}"}
-            for n in range(params["start"], params["end"] + 1)
-        ]
-    if protocol == "s7comm":
-        area = params.get("area", "DB")
-        db = params.get("db_number", 1)
-        prefix = f"DB{db}." if area == "DB" else area
-        return [
-            {"name": f"{prefix}{n}", "area": area, "db_number": db, "start_byte": n,
-             "data_type": "int16", "multiplier": 1.0, "offset": 0.0, "mqtt_key": f"{prefix}{n}"}
-            for n in range(params["start"], params["end"] + 1, 2)
-        ]
-    # modbus_tcp / modbus_rtu
-    rtype = params["register_type"]
-    return [
-        {"name": f"{rtype}[{a}]", "address": a, "register_type": rtype,
-         "data_type": "int16", "multiplier": 1.0, "offset": 0.0, "mqtt_key": f"{rtype}[{a}]"}
-        for a in range(params["start"], params["end"] + 1)
-    ]
 
 
 def discover_db_numbers_sync(conn, max_db, out_queue=None):

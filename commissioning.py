@@ -30,11 +30,15 @@ readings agree. Hardware status of the drivers is in the README (only MC/SLMP FX
 """
 
 import calendar
+import csv
+import io
 import json
 import math
 import re
 import struct
 import time
+import zipfile
+import xml.etree.ElementTree as ET
 
 SCHEMA = "commissioning-pack/1"
 TOOL = "ProtoProbe 0.3.0"
@@ -258,30 +262,33 @@ def imported_signal(t):
     kind = "counter" if t["role"] == "counter" else "bool" if t["type"] == "boolean" else "number"
     integer_counter = t["role"] == "counter" and t["datatype"] in ("int16", "uint16", "int32", "uint32")
     drift = 0.0 if integer_counter else (0.001 if any(rx.search(t["name"]) for rx, u in _UNIT if u == "C") else 0.005)
-    return {"key": t["name"], "label": t["name"], "name": t["name"], "kind": kind, "role": t["role"], "type": t["type"],
+    return {"key": t["name"], "label": t["name"], "name": t["name"], "meaning": t.get("meaning", ""), "kind": kind, "role": t["role"], "type": t["type"],
             "unit": t["unit"], "min": None, "max": None, "deadband_pct": 2 if t["type"] == "instantaneous" else None, "rollover": None,
             "drift": drift, "imported": t}
 
 
 def import_regions(tags, max_gap=200):
-    """The smallest memory regions that cover the imported addresses (one region per device area, split where there is
-    a gap bigger than max_gap words, so a list spanning D600-D900 and D3300-D3400 does not read 2700 words)."""
-    by = {}
+    """The smallest memory regions that cover the imported addresses. One region per device area (and, for Siemens, per
+    data block); split where the gap is bigger than max_gap words, so a list spanning D600-D900 and D3300-D3400 does
+    not read 2700 words. Mitsubishi addresses count words; Siemens addresses count bytes (a word every 2 bytes)."""
+    groups = {}
     for t in tags:
-        by.setdefault(t["area"], []).append((t["number"], t["number"] + t["words"] - 1))
+        groups.setdefault((t["area"], t.get("db")), []).append(t)
     regions = []
-    for area, spans in sorted(by.items()):
-        spans.sort()
+    for (area, db), items in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
+        step = items[0].get("step", 1)
+        spans = sorted((t["number"], t["number"] + (t["words"] - 1) * step) for t in items)
         start, end = spans[0]
         blocks = []
-        for a, b in spans[1:]:
-            if a - end > max_gap:
-                blocks.append((start, end)); start, end = a, b
+        for a1, b1 in spans[1:]:
+            if (a1 - end) / step > max_gap:
+                blocks.append((start, end)); start, end = a1, b1
             else:
-                end = max(end, b)
+                end = max(end, b1)
         blocks.append((start, end))
-        for i, (a, b) in enumerate(blocks):
-            regions.append(Region(area if len(blocks) == 1 else f"{area}{a}", area, a, b))
+        base = f"DB{db}" if area == "DB" else area
+        for lo, hi in blocks:
+            regions.append(Region(base if len(blocks) == 1 else f"{base}_{lo}", area, lo, hi, step=step, db=db))
     return regions
 
 
@@ -307,6 +314,155 @@ def suggest_scale(pairs):
         if all(abs(x - sc) <= 0.02 * sc for x in ratios):
             return sc
     return None
+
+
+# --------------------------------------------------------------------------- importing a TIA Portal tag table (S7)
+
+_NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+
+
+def _col_index(ref):
+    letters = re.match(r"[A-Z]+", ref).group(0)
+    n = 0
+    for ch in letters:
+        n = n * 26 + (ord(ch) - 64)
+    return n - 1
+
+
+def read_xlsx_rows(data):
+    """The first worksheet of an .xlsx (bytes) as a list of rows of text. Standard library only: an .xlsx is a zip of XML.
+    Empty cells keep their column, so a column is always at the same index in every row."""
+    z = zipfile.ZipFile(io.BytesIO(data))
+    shared = []
+    if "xl/sharedStrings.xml" in z.namelist():
+        for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("m:si", _NS):
+            shared.append("".join(t.text or "" for t in si.iter("{%s}t" % _NS["m"])))
+    sheets = sorted(n for n in z.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml$", n))
+    if not sheets:
+        raise ValueError("no worksheet found in the file")
+    rows = []
+    for row in ET.fromstring(z.read(sheets[0])).iter("{%s}row" % _NS["m"]):
+        cells = {}
+        for c in row.findall("m:c", _NS):
+            kind, ref = c.get("t"), c.get("r") or ""
+            v = c.find("m:v", _NS)
+            if kind == "s" and v is not None:
+                text = shared[int(v.text)]
+            elif kind == "inlineStr":
+                text = "".join(t.text or "" for t in c.iter("{%s}t" % _NS["m"]))
+            else:
+                text = v.text if v is not None and v.text is not None else ""
+            cells[_col_index(ref) if ref else len(cells)] = text.strip()
+        rows.append([cells.get(i, "") for i in range(max(cells) + 1)] if cells else [])
+    return rows
+
+
+def rows_from_text(text):
+    """Rows from a tab-, semicolon- or comma-separated text export."""
+    text = str(text)
+    first = next((l for l in text.splitlines() if l.strip()), "")
+    delim = max(("\t", ";", ","), key=first.count)
+    return [[c.strip() for c in r] for r in csv.reader(io.StringIO(text), delimiter=delim)]
+
+
+_TIA_TYPES = {
+    "int": ("int16", 1), "uint": ("uint16", 1), "word": ("uint16", 1),
+    "dint": ("int32", 2), "udint": ("uint32", 2), "dword": ("uint32", 2), "real": ("float32", 2),
+}
+_TIA_UNSUPPORTED = {"bool": "bit tags are not read yet", "byte": "8-bit values are not read yet", "usint": "8-bit values are not read yet",
+                    "sint": "8-bit values are not read yet", "char": "text is not supported yet", "string": "text tags are not supported yet",
+                    "wstring": "text tags are not supported yet", "lreal": "64-bit floats are not supported yet",
+                    "time": "time values are not supported yet", "date_and_time": "time values are not supported yet"}
+_TIA_ABS = re.compile(r"^%?([IQM])([BWD]?)\s*(\d+)(?:\.(\d))?$", re.I)
+_TIA_DB = re.compile(r"^%?DB(\d+)\.DB([XBWD])(\d+)(?:\.(\d))?$", re.I)
+_SIZE_WORDS = {"W": 1, "D": 2}
+
+
+def _clean_name(raw):
+    name = re.sub(r"[^A-Za-z0-9_.\-\[\]]+", "_", raw.strip()).strip("_")
+    return name[:100]
+
+
+def parse_tia_tags(rows, byte_order="ABCD"):
+    """A TIA Portal PLC tag table (Excel export of the tag table, or the same as text) -> {"tags": [...], "skipped": [(name, why)]}.
+    Columns are found by their header names (Name, Data Type, Logical Address, Comment), in any order. Absolute addresses of
+    the inputs, outputs and memory (%IW64, %QD8, %MD20) and of non-optimized data blocks (%DB1.DBD4) are read; tags of optimized
+    blocks have no address and cannot be read this way. Names with spaces are renamed with underscores (and say so)."""
+    rows = [r for r in rows if any(str(c).strip() for c in r)]
+    hdr_i = next((i for i, r in enumerate(rows) if {"name", "data type", "logical address"} <= {str(c).strip().lower() for c in r}), None)
+    if hdr_i is None:
+        return {"tags": [], "skipped": [], "error": "No header row with Name, Data Type and Logical Address found: export the PLC tag table to Excel from TIA Portal."}
+    head = [str(c).strip().lower() for c in rows[hdr_i]]
+    col = {k: head.index(k) for k in ("name", "data type", "logical address")}
+    col_comment = head.index("comment") if "comment" in head else None
+    tags, skipped, seen = [], [], set()
+    for r in rows[hdr_i + 1:]:
+        get = lambda i: (r[i].strip() if i is not None and i < len(r) else "")
+        raw_name, dtype, addr = get(col["name"]), get(col["data type"]), get(col["logical address"])
+        if not raw_name:
+            continue
+        name = _clean_name(raw_name)
+        if not name:
+            skipped.append((raw_name, "the name has no usable characters"))
+            continue
+        key = dtype.strip().lower()
+        if key in _TIA_UNSUPPORTED:
+            skipped.append((raw_name, _TIA_UNSUPPORTED[key]))
+            continue
+        if key not in _TIA_TYPES:
+            skipped.append((raw_name, f"data type '{dtype}' is not understood"))
+            continue
+        datatype, words = _TIA_TYPES[key]
+        if not addr:
+            skipped.append((raw_name, "no address: a tag of an optimized block cannot be read by address"))
+            continue
+        m_abs, m_db = _TIA_ABS.match(addr), _TIA_DB.match(addr)
+        if m_abs:
+            area, size, number, bit = m_abs.group(1).upper(), m_abs.group(2).upper(), int(m_abs.group(3)), m_abs.group(4)
+            db = None
+        elif m_db:
+            db, size, number, bit = int(m_db.group(1)), m_db.group(2).upper(), int(m_db.group(3)), m_db.group(4)
+            area = "DB"
+        else:
+            skipped.append((raw_name, f"address '{addr}' is not an absolute address like %MW10 or %DB1.DBD4"))
+            continue
+        if bit is not None or size in ("", "X", "B"):
+            skipped.append((raw_name, f"address {addr} is a bit or byte address, not a 16/32-bit value"))
+            continue
+        if _SIZE_WORDS[size] != words:
+            skipped.append((raw_name, f"address {addr} is {16 * _SIZE_WORDS[size]}-bit but data type {dtype} needs {16 * words}"))
+            continue
+        if number % 2:
+            skipped.append((raw_name, f"address {addr} starts at an odd byte: not read yet"))
+            continue
+        if name in seen:
+            skipped.append((raw_name, "listed twice (or two names became the same)"))
+            continue
+        seen.add(name)
+        role, ttype = guess_role(name, datatype)
+        comment = get(col_comment)
+        tags.append({"name": name, "area": area, "db": db, "number": number, "step": 2, "datatype": datatype, "words": words,
+                     "byte_order": byte_order if words == 2 else "", "role": role, "type": ttype,
+                     "unit": next((u for rx, u in _UNIT if rx.search(name)), ""), "label_type": dtype, "device_class": "",
+                     "meaning": comment[:200], "renamed_from": raw_name if name != raw_name else ""})
+    return {"tags": tags, "skipped": skipped}
+
+
+def parse_tag_file(path, protocol, byte_order=None):
+    """Read an exported tag list from disk: .xlsx (TIA Portal) or text (.tsv/.csv/.txt, GX Works3 or TIA)."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if protocol == "s7":
+        if data[:2] == b"PK":
+            try:
+                rows = read_xlsx_rows(data)
+            except (zipfile.BadZipFile, ValueError, KeyError, ET.ParseError) as e:
+                return {"tags": [], "skipped": [], "error": f"Could not read the Excel file: {e}"}
+        else:
+            rows = rows_from_text(data.decode("utf-8-sig", errors="replace"))
+        return parse_tia_tags(rows, byte_order or "ABCD")
+    text = data.decode("utf-8-sig", errors="replace")
+    return parse_gx_labels(text, byte_order or "CDAB")
 
 
 # --------------------------------------------------------------------------- scan plan
@@ -579,7 +735,7 @@ def make_tag(signal, address, datatype, byte_order, scale, evid, name=None, unit
     tag = {
         "name": name or signal["name"], "address": address, "datatype": datatype,
         "role": signal["role"], "type": signal["type"], "unit": signal["unit"] if unit is None else unit,
-        "meaning": signal["label"], "evidence": list(evid),
+        "meaning": (signal.get("meaning") or signal["label"])[:200], "evidence": list(evid),
     }
     if byte_order and datatype.endswith("32"):
         tag["byte_order"] = byte_order
