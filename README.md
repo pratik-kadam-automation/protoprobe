@@ -40,8 +40,8 @@ gateway-ready configuration.
   each signal's address, scale and byte order, then PROVES it with fresh readings before you leave
   site. Exports a commissioning pack that the dashboard imports (machine profile, Node-RED
   CONFIG blocks, live early-warning checks). See below.
-- **Dark/light theme**, a real Windows icon and taskbar identity, and a portable
-  single-file `.exe` build — no install, no admin rights, hand it to anyone.
+- **Dark/light theme**, a real Windows icon and taskbar identity, a per-user
+  installer and a portable single-file `.exe` — no admin rights, hand it to anyone.
 
 ## Commissioning wizard (Commissioning tab)
 
@@ -123,22 +123,31 @@ step, not a given — confirm one known value before trusting a wide scan.
 ## Running from source
 
 ```
-pip install pymodbus asyncua paho-mqtt sv-ttk
-pip install python-snap7      # only if using S7comm
-pip install bacpypes3         # only if using BACnet -- heaviest dependency
+pip install -r requirements.txt     # python-snap7 is only used for Siemens, bacpypes3 for BACnet (the heaviest)
 
 python protoprobe.py
 ```
 
-## Building the standalone .exe (Windows)
+## Installing and building (Windows)
+
+**For engineers:** download `ProtoProbe-Setup-<version>.exe` from the Releases page and run it. It installs for your user only, no
+administrator rights needed, and adds a Start menu entry (optional desktop shortcut). The release also has the portable
+`ProtoProbe.exe` (no install, copy it anywhere), `plcread.exe` (the command line tool; the installer can add it to PATH) and
+`SHA256SUMS.txt`. The programs are not code-signed, so Windows SmartScreen may say "unknown publisher": *More info > Run anyway*.
+
+**Releasing:** raise `APP_VERSION` in `protoprobe.py`, merge, then push the tag (`git tag v0.3.1 && git push origin v0.3.1`). The
+*Release (Windows)* workflow runs the tests, builds the programs and the installer on a Windows runner, and publishes the
+release. The tag must equal `v` + `APP_VERSION` or the build stops. *Run workflow* on the Actions tab builds without publishing.
+
+**By hand:**
 
 ```
-pip install pyinstaller
-pyinstaller --onefile --windowed --icon=assets\protoprobe.ico --name ProtoProbe --add-data "assets;assets" --add-data "edge-gateway;edge-gateway" protoprobe.py
+pip install -r requirements.txt pyinstaller
+python packaging/build.py
+iscc /DAppVersion=0.3.0 packaging\protoprobe.iss      # optional: the installer, needs Inno Setup 6
 ```
 
-Output: `dist\ProtoProbe.exe` — a single portable file. No installer, no admin
-rights, nothing else needs to accompany it.
+Output in `dist\`. A Windows `.exe` has to be built on Windows (the same script builds a Linux binary on Linux).
 
 ## Project structure
 
