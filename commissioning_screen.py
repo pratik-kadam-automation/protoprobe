@@ -292,7 +292,7 @@ class CommissioningScreen(ttk.Frame):
             self.pick_boxes[s["key"]] = cb
             if self.mode == "verify" and s["key"] in self.chosen:
                 c = self.chosen[s["key"]]
-                lab = f"{c.region.area}{c.addr}  {c.datatype}" + (f" {c.byte_order}" if c.datatype.endswith("32") else "") + "  (from the list)"
+                lab = (f"DB{c.region.db}." if c.region.area == "DB" else c.region.area) + f"{c.addr}  {c.datatype}" + (f" {c.byte_order}" if c.datatype.endswith("32") else "") + "  (from the list)"
                 cb.configure(values=[lab]); cb.current(0)
             self.read_labels[s["key"]] = ttk.Label(self.grid_frame, text="", foreground="gray")
             self.read_labels[s["key"]].grid(row=r, column=3, sticky="w", padx=6)
@@ -477,20 +477,25 @@ class CommissioningScreen(ttk.Frame):
     # ---- the programmer's tag list ---------------------------------------------------------
     def import_tag_list(self, path=None):
         d = cm.derive(self.collect_answers())
-        if d["protocol"] != "mc":
-            messagebox.showinfo("Mitsubishi only for now", "Import of the GX Works3 label export is available for Mitsubishi. TIA Portal and SIMATIC Manager lists are next.")
+        if d["protocol"] not in ("mc", "s7"):
+            messagebox.showinfo("Not available yet", "Tag-list import works for Mitsubishi (GX Works3 label export) and Siemens (TIA Portal tag table, Excel).")
             return
-        path = path or filedialog.askopenfilename(filetypes=[("Label export", "*.tsv *.txt *.csv"), ("All files", "*.*")])
+        types = [("TIA Portal tag table", "*.xlsx *.csv *.txt")] if d["protocol"] == "s7" else [("GX Works3 label export", "*.tsv *.txt *.csv")]
+        path = path or filedialog.askopenfilename(filetypes=types + [("All files", "*.*")])
         if not path:
             return
-        with open(path, encoding="utf-8-sig", errors="replace") as f:
-            text = f.read()
-        self.load_tag_list(text, d["byte_orders"][0])
+        self.load_imported(cm.parse_tag_file(path, d["protocol"], d["byte_orders"][0]))
 
     def load_tag_list(self, text, byte_order="CDAB"):
-        r = cm.parse_gx_labels(text, byte_order)
+        """The GX Works3 label list as text (used by tests and paste)."""
+        self.load_imported(cm.parse_gx_labels(text, byte_order))
+
+    def load_imported(self, r):
+        if r.get("error"):
+            messagebox.showerror("Could not read the list", r["error"])
+            return
         if not r["tags"]:
-            messagebox.showerror("Nothing to import", "No usable tags found. Expected tab- or comma-separated: name, data type, class, device (like D612).")
+            messagebox.showerror("Nothing to import", "No usable tags found.\n\n" + "\n".join(f"{n}: {why}" for n, why in r["skipped"][:12]))
             return
         self.mode = "verify"
         self.answers = self.collect_answers()
@@ -499,13 +504,16 @@ class CommissioningScreen(ttk.Frame):
         self.chosen, self.cands, self.moments = {}, {}, []
         for sig in self.signals:
             t = sig["imported"]
-            region = next(rg for rg in self.regions if rg.area == t["area"] and rg.start <= t["number"] <= rg.end)
+            region = next(rg for rg in self.regions if rg.area == t["area"] and rg.db == t.get("db") and rg.start <= t["number"] <= rg.end)
             self.chosen[sig["key"]] = cm.candidate_for_import(t, region)
         self._render_grid()
         self.nb.select(self.t_r)
-        self.status.configure(text=f"{len(self.signals)} tags imported" + (f", {len(r['skipped'])} skipped" if r["skipped"] else "") + ".")
-        if r["skipped"]:
-            messagebox.showinfo("Some entries were skipped", "\n".join(f"{n}: {why}" for n, why in r["skipped"][:25]))
+        renamed = [t for t in r["tags"] if t.get("renamed_from")]
+        self.status.configure(text=f"{len(self.signals)} tags imported" + (f", {len(r['skipped'])} skipped" if r["skipped"] else "")
+                              + (f", {len(renamed)} renamed (spaces became _)" if renamed else "") + ".")
+        notes = [f"{n}: {why}" for n, why in r["skipped"][:25]] + [f"renamed: {t['renamed_from']} -> {t['name']}" for t in renamed[:15]]
+        if notes:
+            messagebox.showinfo("Please check", "\n".join(notes))
 
     def apply_suggested_scales(self):
         """The address is right but the HMI shows the value scaled: set the scale the readings point to."""
