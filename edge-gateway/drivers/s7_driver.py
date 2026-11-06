@@ -83,8 +83,11 @@ class S7Driver(BaseDriver):
     def _area_code(self, area: str):
         """Maps our 'DB'/'I'/'Q'/'M' strings to snap7's Areas enum.
         See the VERIFY warning in the module docstring."""
-        from snap7.types import Areas
-        mapping = {"DB": Areas.DB, "I": Areas.PE, "Q": Areas.PA, "M": Areas.MK}
+        try:
+            from snap7.type import Area           # python-snap7 2.x and 3.x (the pinned 3.3.1)
+        except ImportError:
+            from snap7.types import Areas as Area  # python-snap7 1.x
+        mapping = {"DB": Area.DB, "I": Area.PE, "Q": Area.PA, "M": Area.MK}
         if area not in mapping:
             raise ValueError(f"Unsupported S7 area: {area!r} (expected DB/I/Q/M)")
         return mapping[area]
