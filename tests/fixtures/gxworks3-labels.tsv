@@ -1,0 +1,22 @@
+Process_SP	FLOAT [Single Precision]	VAR_GLOBAL	D612
+Process_Act_Value	FLOAT [Single Precision]	VAR_GLOBAL	D618
+Cooling_Act_Flow	FLOAT [Single Precision]	VAR_GLOBAL	D668
+Cooling_Inlet_Temp	FLOAT [Single Precision]	VAR_GLOBAL	D676
+Cooling_Flow_SP_A	FLOAT [Single Precision]	VAR_GLOBAL	D684
+Cooling_Man_SP	FLOAT [Single Precision]	VAR_GLOBAL	D700
+Pump_Drive_Act_Freq	FLOAT [Single Precision]	VAR_GLOBAL	D774
+Pump_Drive_Current	FLOAT [Single Precision]	VAR_GLOBAL	D776
+Line_Speed_Map	FLOAT [Single Precision]	VAR_GLOBAL	D810
+Act_Length	FLOAT [Single Precision]	VAR_GLOBAL	D812
+Act_Weight	FLOAT [Single Precision]	VAR_GLOBAL	D814
+Insertion_Count	FLOAT [Single Precision]	VAR_GLOBAL	D904
+Motor_Overload_Alarm	FLOAT [Single Precision]	VAR_GLOBAL	D920
+			
+INT_data	Word [Signed](0..99)	VAR_GLOBAL	D1050
+Batch_Counter	Word [Unsigned]	VAR_GLOBAL	D1060
+Big_Total	Double Word [Signed]	VAR_GLOBAL	D1070
+Recipe_SP_SCADA	FLOAT [Single Precision]	VAR_GLOBAL_RETAIN	D3350
+Section_Width_SCADA	Word [Signed]	VAR_GLOBAL_RETAIN	D3374
+Run_Bit	Bit	VAR_GLOBAL	M10
+Batch_Name	String(16)	VAR_GLOBAL	D2000
+Wide_Value	FLOAT [Double Precision]	VAR_GLOBAL	D2100

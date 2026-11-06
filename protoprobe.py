@@ -32,7 +32,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -47,12 +47,14 @@ from drivers.s7_driver import S7Driver
 from drivers.mc_driver import MCProtocolDriver
 from drivers.opcua_driver import OPCUADriver
 from drivers.bacnet_driver import BACnetDriver
+from commissioning_screen import CommissioningScreen
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
     ("connections", "Connections"),
     ("scan_results", "Scan results"),
     ("live_values", "Live values"),
+    ("commission", "Commissioning"),
     ("oee", "OEE config"),
     ("output", "Output"),
     ("network", "Network tools"),
@@ -2801,6 +2803,7 @@ class App(tk.Tk):
         self.screens["connections"] = ConnectionsScreen(content, self)
         self.screens["scan_results"] = ScanResultsScreen(content, self)
         self.screens["live_values"] = LiveValuesScreen(content, self)
+        self.screens["commission"] = CommissioningScreen(content, self, DRIVER_FACTORY, build_range_tags)
         self.screens["oee"] = OEEScreen(content, self)
         self.screens["output"] = OutputScreen(content, self)
         self.output_screen = self.screens["output"]
