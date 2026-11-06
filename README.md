@@ -165,3 +165,21 @@ edge-gateway/            Protocol driver library, shared with the real
 ## License
 
 Internal tool — not currently licensed for external distribution.
+
+## Command line tool (`plcread.py`)
+
+No screen, no pack, no dashboard: connect, check, read. Read-only.
+
+```
+python plcread.py probe 192.168.100.13
+python plcread.py read --make mitsubishi --ip 192.168.100.13 --tags labels.tsv
+python plcread.py read --make siemens --ip 10.0.0.5 --tags plc_tags.xlsx --samples 5 --interval 2 --csv
+python plcread.py raw  --make mitsubishi --ip 192.168.100.13 --start D612 --count 40
+```
+
+- `probe` finds which port and transport (UDP or TCP) answer SLMP.
+- `read` prints name, address, type, live value and flags for every tag in a GX Works3 label export or TIA Portal Excel tag table. Mitsubishi finds the UDP/TCP port itself unless you give `--transport` and `--port`.
+- `raw` shows registers (unsigned, signed, hex, and plausible float32 readings) so you can check an address by eye.
+- Flags: `NO DATA`, `BAD FLOAT`, `SUSPECT` (absurd float, usually wrong word order, try `--byte-order`), `FLAT` (unchanged over 3+ samples).
+- Exit code: 0 fine, 2 some tags flagged, 1 could not connect or read.
+- Two network cards? Add `--local-ip` with this computer's address on the PLC network.
