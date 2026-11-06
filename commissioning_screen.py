@@ -428,9 +428,9 @@ class CommissioningScreen(ttk.Frame):
     def import_tag_list(self, path=None):
         d = cm.derive(self.collect_answers())
         if d["protocol"] not in ("mc", "s7"):
-            messagebox.showinfo("Not available yet", "Tag-list import works for Mitsubishi (GX Works3 label export) and Siemens (TIA Portal tag table, Excel).")
+            messagebox.showinfo("Not available yet", "Tag-list import works for Mitsubishi (GX Works3 label export) and Siemens (TIA Portal tag table, or SIMATIC Manager symbol table).")
             return
-        types = [("TIA Portal tag table", "*.xlsx *.csv *.txt")] if d["protocol"] == "s7" else [("GX Works3 label export", "*.tsv *.txt *.csv")]
+        types = [("TIA Portal tag table / SIMATIC Manager symbol table", "*.xlsx *.csv *.txt *.sdf *.asc")] if d["protocol"] == "s7" else [("GX Works3 label export", "*.tsv *.txt *.csv")]
         path = path or filedialog.askopenfilename(filetypes=types + [("All files", "*.*")])
         if not path:
             return

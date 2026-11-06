@@ -1,0 +1,8 @@
+"Pump_Speed_SP","MW 10","INT","speed setpoint"
+"Tank_Level","MD 20","REAL","level %"
+"Total_Count","MD 24","DINT",""
+"Run_Cmd","M 0.0","BOOL","start"
+"Flow Meter","IW 64","INT","m3/h"
+"Raw_In","PIW 256","WORD",""
+"Data_Block_1","DB 1","BLOCK_DB",""
+"Odd_Word","MW 11","INT",""

@@ -83,11 +83,19 @@ by address; use a non-optimized block or OPC UA), and addresses that do not matc
 underscores (the dialog lists each rename). 32-bit values are read big-endian (ABCD), as S7 stores them. Reading S7-1200/1500
 needs "Permit access with PUT/GET" enabled in the CPU. The `.xlsx` is read with the standard library, nothing to install.
 
+**Siemens (SIMATIC Manager, STEP 7 V5.x, S7-300/400)**: *Import tag list* also reads a symbol table exported from SIMATIC Manager
+(symbol table > Table > Export, as `.sdf` or `.asc`; columns Symbol, Address, Data type, Comment). Symbols of inputs, outputs
+and markers with word or double-word size (`MW 10`, `MD 20`, `IW 64`) are read; bits, bytes, blocks (DB/FC/FB), timers,
+counters and peripheral addresses (`PIW`) are listed as skipped. The same rules as TIA apply (INT/WORD 16-bit, DINT/DWORD/REAL
+32-bit big-endian, odd byte addresses skipped). Variables inside a data block are not in the symbol table; export the DB's
+declaration or give their addresses by hand. The `.sdf`/`.asc` layouts are handled from the documented format and a
+synthetic sample; check it against your real export on site.
+
 **Practice mode** (checkbox, top right) runs the whole flow against a simulated PLC with hidden tags and
 decoy values, so you can rehearse without hardware.
 
 Names: a PLC does not serve the programmer's tag names over SLMP, S7 or Modbus; they live in the project. The names
-come from that project's export, or from OPC UA browsing where the PLC has an OPC UA server. The TIA Portal importer is built; the SIMATIC Manager (symbol table) importer is not.
+come from that project's export, or from OPC UA browsing where the PLC has an OPC UA server. The TIA Portal and SIMATIC Manager importers are built.
 
 Not covered yet: OPC UA and BACnet (they expose real tag names: use Connections > Browse), serial Modbus RTU
 (create the connection first), text/string tags, bit areas other than inside words and Modbus coils.

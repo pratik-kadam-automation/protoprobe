@@ -448,6 +448,42 @@ def parse_tia_tags(rows, byte_order="ABCD"):
     return {"tags": tags, "skipped": skipped}
 
 
+# --------------------------------------------------------------------------- importing a SIMATIC Manager symbol table (S7-300/400, STEP 7 V5.x)
+
+_SYM_ADDR = r"(?:P?[IQM][BWD]?|DB|FC|FB|OB|SFC|SFB|UDT|VAT|T|C)\s*\d+(?:\.\d)?"
+_SYM_ADDR_RE = re.compile(r"^" + _SYM_ADDR + r"$", re.I)
+_SYM_LINE_RE = re.compile(r"^(\S.*?)\s{2,}(" + _SYM_ADDR + r")\s+(\S+)\s*(.*)$", re.I)
+
+
+def _sym_to_tia_address(addr):
+    """'MW 10' -> '%MW10', 'M 10.0' -> '%M10.0'. Block entries (DB 1, FC 2) and peripheral addresses are left as they are."""
+    a = re.sub(r"\s+", "", addr.upper())
+    return "%" + a if re.match(r"^[IQM][BWD]?\d+(\.\d)?$", a) else a
+
+
+def parse_simatic_symbols(text, byte_order="ABCD"):
+    """A SIMATIC Manager symbol table, exported as .sdf (comma separated, quoted), .asc (columns) or tab/semicolon text:
+    Symbol, Address, Data type, Comment. Reads the symbols of the inputs, outputs and memory (I/Q/M with W or D) and
+    reports the rest (bits, bytes, blocks, timers, counters, peripheral addresses) as skipped. Then the same rules as a TIA Portal list apply."""
+    lines = [l for l in str(text).splitlines() if l.strip()]
+    rows = []
+    for r in rows_from_text("\n".join(lines)):
+        if len(r) >= 3 and _SYM_ADDR_RE.match(r[1].strip()):
+            rows.append([r[0], r[1], r[2], r[3] if len(r) > 3 else ""])
+    if not rows:                                   # .asc: columns separated by runs of spaces
+        for l in lines:
+            m = _SYM_LINE_RE.match(l.strip())
+            if m:
+                rows.append([m.group(1).strip(), m.group(2), m.group(3), m.group(4).strip()])
+    if not rows:
+        return {"tags": [], "skipped": [], "error": "No symbols found. In SIMATIC Manager open the symbol table and use Table > Export, "
+                                                   "as .sdf or .asc (columns: Symbol, Address, Data type, Comment)."}
+    tia = [["Name", "Path", "Data Type", "Logical Address", "Comment"]]
+    for name, addr, dtype, comment in rows:
+        tia.append([name, "", dtype, _sym_to_tia_address(addr), comment])
+    return parse_tia_tags(tia, byte_order)
+
+
 def parse_tag_file(path, protocol, byte_order=None):
     """Read an exported tag list from disk: .xlsx (TIA Portal) or text (.tsv/.csv/.txt, GX Works3 or TIA)."""
     with open(path, "rb") as f:
@@ -459,7 +495,13 @@ def parse_tag_file(path, protocol, byte_order=None):
             except (zipfile.BadZipFile, ValueError, KeyError, ET.ParseError) as e:
                 return {"tags": [], "skipped": [], "error": f"Could not read the Excel file: {e}"}
         else:
-            rows = rows_from_text(data.decode("utf-8-sig", errors="replace"))
+            try:
+                text = data.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                text = data.decode("cp1252", errors="replace")          # SIMATIC Manager exports are in the Windows code page
+            if "logical address" not in text.lower():
+                return parse_simatic_symbols(text, byte_order or "ABCD")
+            rows = rows_from_text(text)
         return parse_tia_tags(rows, byte_order or "ABCD")
     text = data.decode("utf-8-sig", errors="replace")
     return parse_gx_labels(text, byte_order or "CDAB")
