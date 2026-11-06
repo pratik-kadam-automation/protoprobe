@@ -35,8 +35,59 @@ gateway-ready configuration.
   a broker, including AWS IoT Core-compatible mTLS (CA cert, client cert, client key).
 - **Network tools** — IP and port scanner for finding PLCs on site, replacing the
   need for separate tools like Advanced IP Scanner or ModScan.
+- **Commissioning wizard** — answer a few questions (PLC make, machine type, IPs, which
+  counters the operator resets), type what the HMI shows at four readings, and the tool finds
+  each signal's address, scale and byte order, then PROVES it with fresh readings before you leave
+  site. Exports a commissioning pack that the dashboard imports (machine profile, Node-RED
+  CONFIG blocks, live early-warning checks). See below.
 - **Dark/light theme**, a real Windows icon and taskbar identity, and a portable
   single-file `.exe` build — no install, no admin rights, hand it to anyone.
+
+## Commissioning wizard (Commissioning tab)
+
+Goal: no more "that tag turned out to be wrong" on a deployed gateway weeks later.
+
+1. **Questions** — client, machine type (CCM, singeing, CBR, stenter, furnace, other), PLC make/model/IP,
+   which counters reset at the end of a batch. The answers pick the protocol, the memory to scan, which
+   32-bit byte order to try first (e.g. Mitsubishi word-swapped), and which signals to ask about.
+2. **Readings** — at each reading, type what the HMI shows *right now* for each signal it displays and press
+   *Record reading*; the PLC memory is read once. Readings 1-2 **find** the address: a candidate must fit
+   *every* reading (int16/uint16/int32/uint32/float32, four byte orders, scales 1 ... 0.001 and 10/100),
+   not just one, which removes almost all coincidences. Readings 3-4 **verify** the choice.
+3. **Review** — each tag with its evidence. A tag is **confirmed** only by fresh *verify* readings (two, at
+   least 30 s apart, with a *different* HMI value each time; setpoints/text may repeat). Readings used to
+   find an address can never also confirm it. **probable** = fits but not proved yet; **unverified** = no
+   matching evidence. If two readings are too close to tell candidates apart the screen says so.
+4. **Export** — `<machine>-commissioning.json` (schema `commissioning-pack/1`). In the dashboard:
+   *Commissioning > Import pack*. The dashboard re-runs the same confirmation rule, so a pack cannot claim
+   more than its evidence supports.
+
+**Test connection** (Questions tab, Mitsubishi) sends one read-only SLMP request to each common port over
+UDP *and* TCP and says which one answered, then fills in the transport and port. An open port proves nothing and a
+UDP port cannot be proven open by connecting, so it sends a real read and checks the reply. Some PLCs only have UDP
+switched on (the CCM does), and the MC driver now speaks both: `transport: "udp"` (optional `local_ip` for a laptop
+with two network cards; one retry for a lost datagram). TCP stays the default and is unchanged.
+
+**Import tag list** (Readings tab, Mitsubishi) reads the programmer's GX Works3 label export (tab- or comma-separated:
+name, data type, class, device). Names, addresses, data types and word order come from the programmer; the wizard then
+only has to PROVE them: every reading is a verify reading, a wrong address stays 'unverified', and when an address is
+right but the HMI shows the value scaled (3.2 on the HMI, 32 in the PLC) *Review > Apply suggested scales* sets the scale.
+Bit devices, text and 64-bit floats are listed as skipped, not guessed. Roles and units are suggestions from the names.
+
+**Practice mode** (checkbox, top right) runs the whole flow against a simulated PLC with hidden tags and
+decoy values, so you can rehearse without hardware.
+
+Names: a PLC does not serve the programmer's tag names over SLMP, S7 or Modbus; they live in the project. The names
+come from that project's export, or from OPC UA browsing where the PLC has an OPC UA server. TIA Portal and SIMATIC
+Manager list importers are not built yet.
+
+Not covered yet: OPC UA and BACnet (they expose real tag names: use Connections > Browse), serial Modbus RTU
+(create the connection first), text/string tags, bit areas other than inside words and Modbus coils.
+The wizard reuses the same drivers as Scan, so it is only as proven as they are (see the table below).
+
+Tests: `python -m unittest discover -s tests` (engine, runs anywhere). The screen test needs tkinter and a
+display: `xvfb-run -a python3 -m unittest tests.test_screen_practice`. `tests/fixtures/golden-pack.json` is shared
+with the dashboard's tests: both sides must give every tag the same confidence.
 
 ## Supported protocols
 
@@ -78,6 +129,11 @@ rights, nothing else needs to accompany it.
 ```
 protoprobe.py           Main application (single file -- sidebar shell,
                          all screens, scan workers, OEE engine)
+commissioning.py        Commissioning wizard engine (pure logic: questionnaire,
+                         scan plan, multi-reading search, evidence gate, pack)
+commissioning_screen.py The wizard's Tk screen + practice-mode simulated PLC
+slmp_probe.py           "Is this PLC really answering SLMP, on which port and transport?" (read-only)
+tests/                  Engine tests, wizard flow test, golden pack fixture
 assets/                 Icon (.ico + PNG variants at several sizes)
 edge-gateway/            Protocol driver library, shared with the real
     drivers/            gateway's edge_collector.py -- same drivers this
