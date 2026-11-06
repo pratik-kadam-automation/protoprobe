@@ -40,24 +40,59 @@ DEVICE_CODES = {
 }
 
 
+class _UdpEndpoint(asyncio.DatagramProtocol):
+    """Collects the replies of a connected UDP socket so a late or duplicate datagram can be told from the answer."""
+    def __init__(self):
+        self.replies = asyncio.Queue()
+        self.transport = None
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        self.replies.put_nowait(data)
+
+    def error_received(self, exc):          # e.g. ICMP port unreachable: surface it on the next read
+        self.replies.put_nowait(exc)
+
+
 class MCProtocolDriver(BaseDriver):
+    """interface keys: ip, port, transport ("tcp" default, or "udp"), local_ip (optional: the adapter to send from, for a
+    laptop with more than one network card), timeout_s (default 1.0), retries (UDP only, default 1: a lost datagram is
+    sent once more, a batch read is harmless to repeat)."""
     def __init__(self, group_id, group_config):
         super().__init__(group_id, group_config)
         self.reader = None
         self.writer = None
+        self.udp = None
+
+    def _transport_kind(self):
+        t = str(self.config["interface"].get("transport", "tcp")).strip().lower()
+        if t not in ("tcp", "udp"):
+            raise ValueError(f"MC protocol transport must be tcp or udp, not {t!r}")
+        return t
 
     async def connect(self):
         iface = self.config["interface"]
-        self.reader, self.writer = await asyncio.wait_for(
-            asyncio.open_connection(iface["ip"], iface["port"]),
-            timeout=iface.get("timeout_s", 1.0),
-        )
+        if self._transport_kind() == "udp":
+            loop = asyncio.get_running_loop()
+            local = (iface["local_ip"], 0) if iface.get("local_ip") else None
+            _, self.udp = await loop.create_datagram_endpoint(
+                _UdpEndpoint, remote_addr=(iface["ip"], int(iface["port"])), local_addr=local)
+        else:
+            self.reader, self.writer = await asyncio.wait_for(
+                asyncio.open_connection(iface["ip"], iface["port"]),
+                timeout=iface.get("timeout_s", 1.0),
+            )
         self.connected = True
-        logger.info("Connected: %s", self.group_id)
+        logger.info("Connected: %s (%s)", self.group_id, self._transport_kind())
 
     async def disconnect(self):
         if self.writer:
             self.writer.close()
+        if self.udp is not None and self.udp.transport is not None:
+            self.udp.transport.close()
+        self.udp = None
         self.connected = False
 
     async def poll(self) -> dict:
@@ -85,16 +120,44 @@ class MCProtocolDriver(BaseDriver):
                 )
         return results
 
-    async def _read_words(self, device_code: str, device_number: int, count: int):
-        frame = self._build_read_frame(device_code, device_number, count)
+    async def _exchange_tcp(self, frame: bytes) -> bytes:
         self.writer.write(frame)
         await self.writer.drain()
 
         header = await asyncio.wait_for(self.reader.readexactly(9), timeout=1.0)
         data_len = int.from_bytes(header[7:9], "little")
-        body = await asyncio.wait_for(
-            self.reader.readexactly(data_len), timeout=1.0
-        )
+        return await asyncio.wait_for(self.reader.readexactly(data_len), timeout=1.0)
+
+    async def _exchange_udp(self, frame: bytes) -> bytes:
+        """One request datagram, one reply datagram (the same 3E frame as TCP). Replies left over from an earlier
+        timed-out request are thrown away first, so an old answer is never taken for this one."""
+        iface = self.config["interface"]
+        timeout = float(iface.get("timeout_s", 1.0))
+        attempts = 1 + int(iface.get("retries", 1))
+        while not self.udp.replies.empty():
+            self.udp.replies.get_nowait()
+        for attempt in range(attempts):
+            self.udp.transport.sendto(frame)
+            try:
+                reply = await asyncio.wait_for(self.udp.replies.get(), timeout=timeout)
+            except asyncio.TimeoutError:
+                if attempt == attempts - 1:
+                    raise
+                continue
+            if isinstance(reply, Exception):
+                raise ConnectionError(str(reply))
+            if len(reply) < 11 or reply[0:2] != b"\xD0\x00":
+                raise MCProtocolError(f"Not an MC protocol 3E reply: {reply[:12].hex()}")
+            data_len = int.from_bytes(reply[7:9], "little")
+            return reply[9:9 + data_len]
+        raise asyncio.TimeoutError()
+
+    async def _read_words(self, device_code: str, device_number: int, count: int):
+        frame = self._build_read_frame(device_code, device_number, count)
+        if self._transport_kind() == "udp":
+            body = await self._exchange_udp(frame)
+        else:
+            body = await self._exchange_tcp(frame)
 
         end_code = int.from_bytes(body[0:2], "little")
         if end_code != 0:
