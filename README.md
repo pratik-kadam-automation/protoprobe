@@ -74,12 +74,20 @@ only has to PROVE them: every reading is a verify reading, a wrong address stays
 right but the HMI shows the value scaled (3.2 on the HMI, 32 in the PLC) *Review > Apply suggested scales* sets the scale.
 Bit devices, text and 64-bit floats are listed as skipped, not guessed. Roles and units are suggestions from the names.
 
+**Siemens (TIA Portal)**: for an S7 PLC, *Import tag list* reads the PLC tag table exported to Excel (`.xlsx`; or the same
+columns as text). Columns are found by their headers (Name, Data Type, Logical Address, Comment), so their order does not
+matter. Absolute addresses of inputs, outputs, markers and non-optimized data blocks are read (`%IW64`, `%QD8`, `%MD20`,
+`%DB1.DBD4`); the comment becomes the tag's meaning. Skipped, with the reason shown: bit and byte tags, text, tags with no
+address (optimized blocks: S7-1200/1500 data blocks with "optimized block access" have no fixed address and cannot be read
+by address; use a non-optimized block or OPC UA), and addresses that do not match their type. Names with spaces become
+underscores (the dialog lists each rename). 32-bit values are read big-endian (ABCD), as S7 stores them. Reading S7-1200/1500
+needs "Permit access with PUT/GET" enabled in the CPU. The `.xlsx` is read with the standard library, nothing to install.
+
 **Practice mode** (checkbox, top right) runs the whole flow against a simulated PLC with hidden tags and
 decoy values, so you can rehearse without hardware.
 
 Names: a PLC does not serve the programmer's tag names over SLMP, S7 or Modbus; they live in the project. The names
-come from that project's export, or from OPC UA browsing where the PLC has an OPC UA server. TIA Portal and SIMATIC
-Manager list importers are not built yet.
+come from that project's export, or from OPC UA browsing where the PLC has an OPC UA server. The TIA Portal importer is built; the SIMATIC Manager (symbol table) importer is not.
 
 Not covered yet: OPC UA and BACnet (they expose real tag names: use Connections > Browse), serial Modbus RTU
 (create the connection first), text/string tags, bit areas other than inside words and Modbus coils.
@@ -157,3 +165,21 @@ edge-gateway/            Protocol driver library, shared with the real
 ## License
 
 Internal tool — not currently licensed for external distribution.
+
+## Command line tool (`plcread.py`)
+
+No screen, no pack, no dashboard: connect, check, read. Read-only.
+
+```
+python plcread.py probe 192.168.100.13
+python plcread.py read --make mitsubishi --ip 192.168.100.13 --tags labels.tsv
+python plcread.py read --make siemens --ip 10.0.0.5 --tags plc_tags.xlsx --samples 5 --interval 2 --csv
+python plcread.py raw  --make mitsubishi --ip 192.168.100.13 --start D612 --count 40
+```
+
+- `probe` finds which port and transport (UDP or TCP) answer SLMP.
+- `read` prints name, address, type, live value and flags for every tag in a GX Works3 label export or TIA Portal Excel tag table. Mitsubishi finds the UDP/TCP port itself unless you give `--transport` and `--port`.
+- `raw` shows registers (unsigned, signed, hex, and plausible float32 readings) so you can check an address by eye.
+- Flags: `NO DATA`, `BAD FLOAT`, `SUSPECT` (absurd float, usually wrong word order, try `--byte-order`), `FLAT` (unchanged over 3+ samples).
+- Exit code: 0 fine, 2 some tags flagged, 1 could not connect or read.
+- Two network cards? Add `--local-ip` with this computer's address on the PLC network.
