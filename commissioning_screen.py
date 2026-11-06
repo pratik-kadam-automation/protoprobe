@@ -22,63 +22,13 @@ from tkinter import ttk, messagebox, filedialog
 
 import commissioning as cm
 import slmp_probe
+from plc_reader import DriverReader, PROTOCOL_KEY   # noqa: F401  (the reader lives in plc_reader so the command line tool can use it too)
 
-PROTOCOL_KEY = {"mc": "mc_protocol_3e", "s7": "s7comm", "modbus_tcp": "modbus_tcp", "modbus_rtu": "modbus_rtu"}
 READINGS_PLAN = ["find", "find", "verify", "verify"]       # the guided sequence; more verify readings can follow
 BATCH = 200
 
 
 # --------------------------------------------------------------------------- where the memory comes from
-
-class DriverReader:
-    """Reads a region of a real PLC with ProtoProbe's own drivers (the same path the Scan feature uses)."""
-    def __init__(self, protocol, interface, driver_factory, build_range_tags):
-        self.protocol = protocol
-        self.pkey = PROTOCOL_KEY[protocol]
-        self.interface = interface
-        self.driver_factory = driver_factory
-        self.build_range_tags = build_range_tags
-
-    def _params(self, region):
-        if self.protocol == "mc":
-            return {"device_code": region.area, "start": region.start, "end": region.end}
-        if self.protocol == "s7":
-            return {"area": region.area, "db_number": region.db or 1, "start": region.start, "end": region.end}
-        return {"register_type": region.area, "start": region.start, "end": region.end}
-
-    @staticmethod
-    def _addr_of(protocol, tag):
-        return tag["device_number"] if protocol == "mc" else tag["start_byte"] if protocol == "s7" else tag["address"]
-
-    def read_region(self, region, stop=None):
-        tags = self.build_range_tags(self.pkey, self._params(region))
-        is_modbus = self.protocol.startswith("modbus")
-        cfg = ({"interface": self.interface, "devices": [{"unit_id": self.interface.get("unit_id", 1), "tags": []}]} if is_modbus
-               else {"interface": self.interface, "tags": []})
-        driver = self.driver_factory[self.pkey](cfg)
-
-        async def run():
-            await driver.connect()
-            words = {}
-            try:
-                for i in range(0, len(tags), BATCH):
-                    if stop is not None and stop.is_set():
-                        break
-                    batch = tags[i:i + BATCH]
-                    if is_modbus:
-                        driver.config["devices"][0]["tags"] = batch
-                    else:
-                        driver.config["tags"] = batch
-                    values = await driver.poll()
-                    for t in batch:
-                        if t["name"] in values:
-                            words[self._addr_of(self.protocol, t)] = int(values[t["name"]]) & 0xFFFF
-            finally:
-                await driver.disconnect()
-            return words
-
-        return asyncio.run(run())
-
 
 class PracticePLC:
     """A simulated machine for rehearsal: noise in memory, a few hidden tags, and an HMI you read values from."""
