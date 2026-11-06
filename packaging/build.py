@@ -33,10 +33,9 @@ def run(args):
 
 
 def main():
-    gui = ["--onefile", "--windowed", "--name", "ProtoProbe", "--add-data", f"assets{SEP}assets",
+    icon = ["--icon", os.path.join("assets", "protoprobe.ico")] if sys.platform == "win32" else []
+    gui = ["--onefile", "--windowed", "--name", "ProtoProbe", *icon, "--add-data", f"assets{SEP}assets",
            "--add-data", f"edge-gateway{SEP}edge-gateway", "protoprobe.py"]
-    if sys.platform == "win32":
-        gui[3:3] = ["--icon", os.path.join("assets", "protoprobe.ico")]
     run(COMMON + gui)
     run(COMMON + ["--onefile", "--console", "--name", "plcread", "plcread.py"])
     print("built version", app_version())
