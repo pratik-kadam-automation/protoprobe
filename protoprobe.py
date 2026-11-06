@@ -48,6 +48,7 @@ from drivers.mc_driver import MCProtocolDriver
 from drivers.opcua_driver import OPCUADriver
 from drivers.bacnet_driver import BACnetDriver
 from commissioning_screen import CommissioningScreen
+import protocol_detect
 from plc_reader import build_range_tags
 
 NAV_ITEMS = [
@@ -2345,8 +2346,10 @@ class NetworkToolsScreen(ttk.Frame):
         self.app = app
         self._ip_queue = queue.Queue()
         self._port_queue = queue.Queue()
+        self._detect_queue = queue.Queue()
         self._ip_scanning = False
         self._port_scanning = False
+        self._detecting = False
         self._build()
 
     def _build(self):
@@ -2362,7 +2365,7 @@ class NetworkToolsScreen(ttk.Frame):
 
         row = ttk.Frame(ip_frame)
         row.pack(fill="x", padx=8, pady=6)
-        ttk.Label(row, text="Base (first 3 octets)").pack(side="left")
+        ttk.Label(row, text="Base (first 3 numbers, e.g. 192.168.0)").pack(side="left")
         self.ip_base_entry = ttk.Entry(row, width=16)
         self.ip_base_entry.insert(0, "192.168.3")
         self.ip_base_entry.pack(side="left", padx=(4, 12))
@@ -2400,6 +2403,12 @@ class NetworkToolsScreen(ttk.Frame):
         self.ports_entry.pack(side="left", padx=(4, 12))
         self.port_scan_btn = ttk.Button(prow, text="Scan ports", command=self.start_port_scan)
         self.port_scan_btn.pack(side="left", padx=4)
+        self.detect_btn = ttk.Button(prow, text="Detect protocols", command=self.start_detect)
+        self.detect_btn.pack(side="left", padx=4)
+        self.detect_label = ttk.Label(port_frame, text="Detect protocols asks the device with one real, read-only request per protocol: "
+                                      "S7comm, Modbus TCP, OPC UA, BACnet/IP and SLMP (UDP and TCP). Modbus RTU and BACnet MS/TP are serial "
+                                      "(RS-485) and cannot be found over the network.", foreground="gray", wraplength=900)
+        self.detect_label.pack(anchor="w", padx=8)
 
         self.port_tree = ttk.Treeview(port_frame, columns=("port", "status", "likely"), show="headings", height=8)
         self.port_tree.heading("port", text="Port")
@@ -2413,8 +2422,13 @@ class NetworkToolsScreen(ttk.Frame):
     def start_ip_scan(self):
         if self._ip_scanning:
             return
+        base = self.ip_base_entry.get().strip()
+        parts = base.split(".")
+        if len(parts) != 3 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            messagebox.showerror("Invalid base", "Type only the first three numbers of the address, for example 192.168.0 "
+                                 "(the scanner adds the last number itself).")
+            return
         try:
-            base = self.ip_base_entry.get().strip()
             start = int(self.ip_start_entry.get().strip())
             end = int(self.ip_end_entry.get().strip())
         except ValueError:
@@ -2474,6 +2488,42 @@ class NetworkToolsScreen(ttk.Frame):
             pass
         if self._ip_scanning:
             self.after(150, lambda: self._pump_ip_queue(total))
+
+    def start_detect(self):
+        if self._detecting:
+            return
+        ip = self.port_ip_entry.get().strip()
+        if not ip:
+            messagebox.showerror("Missing IP", "Enter a target IP first")
+            return
+        self.port_tree.delete(*self.port_tree.get_children())
+        self._detecting = True
+        self.detect_btn.configure(state="disabled")
+        self.detect_label.configure(text=f"Asking {ip} ...", foreground="gray")
+        threading.Thread(target=self._run_detect, args=(ip,), daemon=True).start()
+        self._pump_detect_queue()
+
+    def _run_detect(self, ip):
+        try:
+            self._detect_queue.put(("done", protocol_detect.detect_all(ip)))
+        except Exception as e:                        # never leave the button disabled
+            self._detect_queue.put(("error", f"{type(e).__name__}: {e}"))
+
+    def _pump_detect_queue(self):
+        try:
+            kind, payload = self._detect_queue.get_nowait()
+        except queue.Empty:
+            self.after(150, self._pump_detect_queue)
+            return
+        self._detecting = False
+        self.detect_btn.configure(state="normal")
+        if kind == "error":
+            self.detect_label.configure(text=f"Detection failed: {payload}", foreground="#e06c6c")
+            return
+        for r in payload:
+            status = "Answers" if r["status"] == "answers" else "Open, not this protocol"
+            self.port_tree.insert("", "end", values=(f'{r["port"]}/{r["transport"].upper()}', status, f'{r["protocol"]}: {r["text"]}'))
+        self.detect_label.configure(text=protocol_detect.summary(payload), foreground="#4caf50" if payload else "gray")
 
     def start_port_scan(self):
         if self._port_scanning:

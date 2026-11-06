@@ -34,7 +34,10 @@ gateway-ready configuration.
 - **JSON output editor + MQTT/mTLS publish** — edit the exact payload shape sent to
   a broker, including AWS IoT Core-compatible mTLS (CA cert, client cert, client key).
 - **Network tools** — IP and port scanner for finding PLCs on site, replacing the
-  need for separate tools like Advanced IP Scanner or ModScan.
+  need for separate tools like Advanced IP Scanner or ModScan. **Detect protocols** asks the device with one real,
+  read-only request per protocol (S7comm incl. the right slot, Modbus TCP, OPC UA, BACnet/IP, SLMP over UDP and TCP), so a
+  UDP-only PLC is found too. Modbus RTU and BACnet MS/TP are serial (RS-485) and are not found over the network.
+  The IP scanner pings, so a device that does not answer ping is not listed; type only the first three numbers (192.168.0).
 - **Commissioning wizard** — answer a few questions (PLC make, machine type, IPs, which
   counters the operator resets), type what the HMI shows at four readings, and the tool finds
   each signal's address, scale and byte order, then PROVES it with fresh readings before you leave
