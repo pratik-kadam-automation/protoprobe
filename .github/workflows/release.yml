@@ -37,7 +37,10 @@ jobs:
       - name: Check the command line program starts
         run: |
           dist\plcread.exe --help
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # No PLC on the runner: probe correctly exits 1 ("nothing answered"). We only need it to start and run.
           dist\plcread.exe probe 127.0.0.1 --ports 5006 --timeout 0.3
+          exit 0
         continue-on-error: false
       - name: Build installer
         shell: bash
