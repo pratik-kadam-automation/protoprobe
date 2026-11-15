@@ -29,10 +29,11 @@ A full-app start-up check under xvfb (every screen shows) was used by hand; ther
 Raise `APP_VERSION`, merge, then the owner pushes the tag (`git tag v0.3.1 && git push origin v0.3.1`). The *Release (Windows)* workflow runs the tests, builds `ProtoProbe.exe`, `plcread.exe`
 and the installer on a Windows runner and publishes the release. The tag must equal `v` + `APP_VERSION`. Builds are not code-signed (SmartScreen warns).
 
-## State on 2026-11-07
-- Merged to main: commissioning wizard (#1), TIA Portal importer + `plcread` (#2), SIMATIC Manager importer (#3), Windows installer/release workflow (#4), S7 area-code import fix for python-snap7 2.x/3.x (#5, made in another session).
-- **Open:** the first `v0.3.0` release build FAILED (the icon option was inserted inside `--name` in `packaging/build.py`, line 39 on main). The fix is on branch `fix-win-build`, **not merged**.
-  To release: merge it, delete tag `v0.3.0` on GitHub (`git push origin :refs/tags/v0.3.0`), tag again on the fixed main. Later steps of the Windows build (installer, checksums, release) have never run.
+## State on 2026-11-15
+- Merged to main: commissioning wizard (#1), TIA Portal importer + `plcread` (#2), SIMATIC Manager importer (#3), Windows installer/release workflow (#4), S7 area-code import fix for python-snap7 2.x/3.x (#5, made in another session), this file (#6), Windows build icon fix (#7), release smoke-test fix (#8).
+- **Released:** `v0.3.0`. The first build failed (icon option inserted inside `--name`); after #7 and #8 the owner deleted the tag, tagged the fixed main again and the *Release (Windows)* workflow ended green (reported by the owner).
+  Not yet checked by the session that wrote this: the installer and `ProtoProbe.exe` on a clean Windows machine. Builds are not code-signed (SmartScreen warns).
+- Trap: `plcread probe` exits 1 when no PLC answers. The workflow's smoke-test step accepts that on purpose (`exit 0`); do not "fix" it back, a runner has no PLC.
 - Not tested on real hardware: Mitsubishi FX5U over UDP in the wizard (only the SLMP frame was proven in the field with a script), any Siemens PLC, the GX Works3 / TIA Portal / SIMATIC Manager importers against real exports (the `.sdf`/`.asc` layouts follow the documented format).
 - Not built: BACnet and OPC UA discovery in the wizard (they expose real tag names: use Connections > Browse), serial Modbus RTU in the wizard.
 
