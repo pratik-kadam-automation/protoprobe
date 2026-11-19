@@ -21,7 +21,7 @@ asks the engineer to confirm values against the HMI at different moments, and ex
 `edge-gateway/drivers/` (Modbus, S7, MC/SLMP incl. UDP, OPC UA, BACnet), `packaging/` (PyInstaller build, Inno Setup installer), `.github/workflows/release.yml`.
 
 ## Checks before a PR
-    python3 -m unittest discover -s tests                                   # engine, SLMP simulators, plcread, importers
+    python3 -m unittest discover -s tests                                   # engine, SLMP simulators, plcread, importers (S7 tests need python-snap7==3.3.1, see Traps)
     xvfb-run -a python3.12 -m unittest tests.test_screen_practice tests.test_tia_import     # Tk screens (needs python3-tk and a virtual display)
 A full-app start-up check under xvfb (every screen shows) was used by hand; there is no CI for the app tests, so run them yourself.
 
@@ -29,13 +29,14 @@ A full-app start-up check under xvfb (every screen shows) was used by hand; ther
 Raise `APP_VERSION`, merge, then the owner pushes the tag (`git tag v0.3.1 && git push origin v0.3.1`). The *Release (Windows)* workflow runs the tests, builds `ProtoProbe.exe`, `plcread.exe`
 and the installer on a Windows runner and publishes the release. The tag must equal `v` + `APP_VERSION`. Builds are not code-signed (SmartScreen warns).
 
-## State on 2026-11-15
-- Merged to main: commissioning wizard (#1), TIA Portal importer + `plcread` (#2), SIMATIC Manager importer (#3), Windows installer/release workflow (#4), S7 area-code import fix for python-snap7 2.x/3.x (#5, made in another session), this file (#6), Windows build icon fix (#7), release smoke-test fix (#8).
-- **Released:** `v0.3.0`. The first build failed (icon option inserted inside `--name`); after #7 and #8 the owner deleted the tag, tagged the fixed main again and the *Release (Windows)* workflow ended green (reported by the owner).
-  Not yet checked by the session that wrote this: the installer and `ProtoProbe.exe` on a clean Windows machine. Builds are not code-signed (SmartScreen warns).
+## State on 2026-11-19
+- Merged to main: commissioning wizard (#1), TIA Portal importer + `plcread` (#2), SIMATIC Manager importer (#3), Windows installer/release workflow (#4), S7 area-code import fix for python-snap7 2.x/3.x (#5), this file (#6), Windows build fixes (#7, #8), release state note (#9).
+- **Released:** `v0.3.0` (the *Release (Windows)* workflow ended green, reported by the owner). The owner now runs `ProtoProbe.exe` v0.3.0 on a Windows PC and has started the first connection to a Siemens PLC (Connections > Scan for live tags). Builds are not code-signed (SmartScreen warns). Still not checked: the installer on a clean Windows machine.
+- **Bug found by that first use, fix on branch `fix-discover-dbs-hang`, NOT merged:** "Discover DBs" showed "Probing..." for ever with the button disabled whenever the PLC connection failed (the background thread died silently). The window now shows the real error with a plain-words hint (network, rack/slot, PUT/GET, optimized block access), and a probe that finds no DB says why. `tests/test_discover_dbs.py` (6 tests, stand-in driver). To release it: merge, raise `APP_VERSION`, owner tags.
 - Trap: `plcread probe` exits 1 when no PLC answers. The workflow's smoke-test step accepts that on purpose (`exit 0`); do not "fix" it back, a runner has no PLC.
-- Not tested on real hardware: Mitsubishi FX5U over UDP in the wizard (only the SLMP frame was proven in the field with a script), any Siemens PLC, the GX Works3 / TIA Portal / SIMATIC Manager importers against real exports (the `.sdf`/`.asc` layouts follow the documented format).
-- Not built: BACnet and OPC UA discovery in the wizard (they expose real tag names: use Connections > Browse), serial Modbus RTU in the wizard.
+- Trap: the S7 driver tests need `python-snap7==3.3.1` (the version this project pins). Without it `tests/test_s7_driver.py` shows 3 failures that are not a code problem. Use a virtual environment: `python3.12 -m venv v && v/bin/pip install python-snap7==3.3.1`, then run the tests with `xvfb-run -a v/bin/python -m unittest discover -s tests`.
+- Not tested on real hardware: Mitsubishi FX5U over UDP in the wizard (only the SLMP frame was proven in the field with a script), a Siemens PLC beyond the first connection attempt above (result not reported yet), the GX Works3 / TIA Portal / SIMATIC Manager importers against real exports (the `.sdf`/`.asc` layouts follow the documented format).
+- Not built: BACnet and OPC UA discovery in the wizard (they expose real tag names: use Connections > Browse), serial Modbus RTU in the wizard. Idea not started: use the gateway's own "data point" configuration (the M300 keeps the register addresses there) as a source of tags for ProtoProbe; the export format is not known yet.
 
 ## Timeline (git dates)
 - 2026-08-31 licence added (all rights reserved). 2026-11-06 all the work above (PRs #1-#5), done in sessions on 2026-11-05..07.
