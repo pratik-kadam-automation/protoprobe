@@ -32,7 +32,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
