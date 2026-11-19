@@ -32,7 +32,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -292,6 +292,32 @@ def discover_db_numbers_sync(conn, max_db, out_queue=None, errors=None):
         return found
 
     return asyncio.run(run_probe())
+
+
+def hidden_subprocess_kwargs(platform=None):
+    """Keyword arguments that start a child program (ping, arp ...) WITHOUT a window. ProtoProbe.exe has no console of its own, so on
+    Windows every child process otherwise opens its own black console window: an IP scan of 254 addresses opened 254 of them, many at
+    once, and they took the focus away so the app could not be used meanwhile. Elsewhere nothing is needed."""
+    if not (platform or sys.platform).startswith("win"):
+        return {}
+    kwargs = {"creationflags": 0x08000000}                 # CREATE_NO_WINDOW
+    if hasattr(subprocess, "STARTUPINFO"):                 # Windows only; also asks the program to start hidden
+        info = subprocess.STARTUPINFO()
+        info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        info.wShowWindow = 0                               # SW_HIDE
+        kwargs["startupinfo"] = info
+    return kwargs
+
+
+def ping_once(ip, platform=None, runner=None):
+    """True if `ip` answers one ping. The ping runs hidden (see hidden_subprocess_kwargs). `runner` is a stand-in for subprocess.run in tests."""
+    platform = platform or sys.platform
+    cmd = ["ping", "-n", "1", "-w", "500", ip] if platform.startswith("win") else ["ping", "-c", "1", "-W", "1", ip]
+    try:
+        result = (runner or subprocess.run)(cmd, capture_output=True, timeout=2, **hidden_subprocess_kwargs(platform))
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 def run_db_discovery(conn, max_db, out_queue):
@@ -2472,6 +2498,8 @@ class NetworkToolsScreen(ttk.Frame):
 
         self.ip_tree.delete(*self.ip_tree.get_children())
         self._ip_scanning = True
+        self._ip_done = 0
+        self._ip_found = 0
         self.ip_scan_btn.configure(state="disabled")
         total = end - start + 1
         self.ip_progress_label.configure(text=f"Scanning 0/{total}...")
@@ -2485,16 +2513,7 @@ class NetworkToolsScreen(ttk.Frame):
 
         def ping_host(host_num):
             ip = f"{base}.{host_num}"
-            try:
-                if sys.platform.startswith("win"):
-                    cmd = ["ping", "-n", "1", "-w", "500", ip]
-                else:
-                    cmd = ["ping", "-c", "1", "-W", "1", ip]
-                result = subprocess.run(cmd, capture_output=True, timeout=2)
-                reachable = result.returncode == 0
-            except Exception:
-                reachable = False
-            return ip, reachable
+            return ip, ping_once(ip)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
             futures = [pool.submit(ping_host, n) for n in range(start, end + 1)]
@@ -2503,22 +2522,23 @@ class NetworkToolsScreen(ttk.Frame):
         self._ip_queue.put(None)  # sentinel: scan complete
 
     def _pump_ip_queue(self, total):
-        done_count = 0
         try:
             while True:
                 item = self._ip_queue.get_nowait()
                 if item is None:
                     self._ip_scanning = False
                     self.ip_scan_btn.configure(state="normal")
-                    self.ip_progress_label.configure(text=f"Done -- {total} addresses checked")
+                    self.ip_progress_label.configure(text=f"Done -- {total} addresses checked, {self._ip_found} reachable")
                     return
                 ip, reachable = item
-                done_count += 1
+                self._ip_done += 1
                 if reachable:
+                    self._ip_found += 1
                     self.ip_tree.insert("", "end", values=(ip, "Reachable"))
         except queue.Empty:
             pass
         if self._ip_scanning:
+            self.ip_progress_label.configure(text=f"Scanning {self._ip_done}/{total}... {self._ip_found} reachable so far")
             self.after(150, lambda: self._pump_ip_queue(total))
 
     def start_port_scan(self):
