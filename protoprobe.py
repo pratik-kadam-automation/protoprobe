@@ -19,6 +19,7 @@ except ImportError:
     SV_TTK_AVAILABLE = False
 import csv
 import json
+import logging
 import operator
 import os
 import queue
@@ -436,6 +437,44 @@ def compute_32bit_candidates(current_value, next_value):
     return candidates
 
 
+DRIVER_LOGGERS = ("drivers.s7_driver", "drivers.mc_driver", "drivers.modbus_driver")
+
+
+class ScanLogCollector(logging.Handler):
+    """Collects the drivers' per-address warnings during a scan instead of letting Python print every one of them to the console (an
+    unreadable range of 1000 addresses printed 1000 lines per snapshot). `counts` maps the error text to how many times it happened."""
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.counts = {}
+
+    def emit(self, record):
+        try:
+            text = str(record.args[-1]) if record.args else record.getMessage()
+        except Exception:
+            text = "error"
+        self.counts[text] = self.counts.get(text, 0) + 1
+
+    def top(self):
+        return max(self.counts, key=self.counts.get) if self.counts else None
+
+
+def last_readable_offset(readable, start, end, step=2):
+    """The highest offset in start..end (stepping by `step`) that `readable(offset)` accepts, found by halving: about log2(range) probes
+    instead of one read per address. Assumes memory is readable from `start` up to some limit and not beyond. None if `start` itself is not readable."""
+    if not readable(start):
+        return None
+    if readable(end):
+        return end
+    lo, hi = start, end                      # lo is readable, hi is not
+    while hi - lo > step:
+        mid = lo + max(step, ((hi - lo) // (2 * step)) * step)
+        if readable(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_queue, stop_event=None):
     """Reads `tags` num_snapshots times (batched, with progress pushed to
     out_queue), diffs them, and pushes one ('results', (conn.name,
@@ -452,7 +491,8 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
         out_queue.put(("status", f"[{job_label}] skipped -- empty range"))
         return
 
-    batches = [tags[i:i + SCAN_BATCH_SIZE] for i in range(0, len(tags), SCAN_BATCH_SIZE)]
+    scan_tags = list(tags)                  # what is really scanned: for Siemens it is cut down to the readable part of the range
+    batches = [scan_tags[i:i + SCAN_BATCH_SIZE] for i in range(0, len(scan_tags), SCAN_BATCH_SIZE)]
 
     if protocol in ("modbus_tcp", "modbus_rtu"):
         group_cfg = {"interface": conn.interface,
@@ -472,11 +512,35 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
         await driver.connect()
         snapshots = [dict() for _ in range(num_snapshots)]
         stopped_early = False
+        if protocol == "s7comm":
+            # Find where the PLC's memory really ends before reading it address by address: asking for memory that is not there
+            # (an input area of 1024 bytes scanned up to 2000) only fails, thousands of times.
+            first = scan_tags[0]
+            area, db = first["area"], first.get("db_number", 0)
+            loop = asyncio.get_event_loop()
+
+            def readable(offset):
+                try:
+                    driver._read_area_blocking(area, db, offset, 2)
+                    return True
+                except Exception:
+                    return False
+
+            first_byte, last_byte = first["start_byte"], scan_tags[-1]["start_byte"]
+            last_ok = await loop.run_in_executor(None, last_readable_offset, readable, first_byte, last_byte)
+            if last_ok is None:
+                out_queue.put(("status", f"[{job_label}] nothing readable at byte {first_byte}: the PLC has no memory here, or access is refused"))
+                scan_tags[:] = []
+                batches[:] = []
+            elif last_ok < last_byte:
+                scan_tags[:] = [t for t in scan_tags if t["start_byte"] <= last_ok]
+                batches[:] = [scan_tags[i:i + SCAN_BATCH_SIZE] for i in range(0, len(scan_tags), SCAN_BATCH_SIZE)]
+                out_queue.put(("status", f"[{job_label}] the PLC has {last_ok + 2 - first_byte} bytes here (up to byte {last_ok + 1}): scanning those, not up to {last_byte}"))
         for i in range(num_snapshots):
             done_count = 0
             for batch in batches:
                 if stop_event is not None and stop_event.is_set():
-                    out_queue.put(("status", f"[{job_label}] stopped -- reporting {done_count}/{len(tags)} read so far"))
+                    out_queue.put(("status", f"[{job_label}] stopped -- reporting {done_count}/{len(scan_tags)} read so far"))
                     stopped_early = True
                     break
                 set_batch_tags(batch)
@@ -485,7 +549,7 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
                 done_count += len(batch)
                 out_queue.put((
                     "status",
-                    f"[{job_label}] snapshot {i + 1}/{num_snapshots} -- {done_count}/{len(tags)} read"
+                    f"[{job_label}] snapshot {i + 1}/{num_snapshots} -- {done_count}/{len(scan_tags)} read"
                 ))
             if stopped_early:
                 break
@@ -494,14 +558,23 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
         await driver.disconnect()
         return snapshots
 
+    collector = ScanLogCollector()
+    loggers = [logging.getLogger(n) for n in DRIVER_LOGGERS]
+    for lg in loggers:
+        lg.addHandler(collector)            # quiet: a handler here also stops Python printing every warning to the console
     try:
         snapshots = asyncio.run(run_scan())
     except Exception as e:
         out_queue.put(("status", f"[{job_label}] failed: {e}"))
         return
+    finally:
+        for lg in loggers:
+            lg.removeHandler(collector)
+    if collector.counts:
+        out_queue.put(("status", f"[{job_label}] {sum(collector.counts.values())} reads failed; most common: {collector.top()}"))
 
     results = []
-    for tag in tags:
+    for tag in scan_tags:
         name = tag["name"]
         vals_present = [snap[name] for snap in snapshots if name in snap]
         if not vals_present:
