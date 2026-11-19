@@ -249,10 +249,29 @@ SCAN_BATCH_SIZE = 200
 SCAN_SAFETY_CEILING = 20000
 
 
-def discover_db_numbers_sync(conn, max_db, out_queue=None):
+def explain_s7_error(message):
+    """A plain-words hint for a snap7 error text, for when a probe or read of a DB fails. The texts are snap7's (they vary a little
+    between versions), so this matches on the words that matter and returns None when it does not know the error."""
+    m = str(message).lower()
+    if "address out of range" in m or "item not available" in m or "invalid address" in m:
+        return ("that DB does not exist, or it uses 'optimized block access' (then absolute addresses cannot be read: "
+                "in TIA Portal turn off 'Optimized block access' for that DB and compile)")
+    if "function not available" in m or "not allowed" in m or "access to object" in m or "protection" in m:
+        return ("the PLC refuses the read: in TIA Portal enable 'Permit access with PUT/GET communication from remote partner' "
+                "(S7-1200/1500) and check the CPU's protection level")
+    if "timed out" in m or "timeout" in m or "recv tcp" in m or "connection reset" in m or "connection refused" in m or "unreachable" in m:
+        return "the PLC does not answer on port 102: check the IP address, the cable or VPN, and that this PC is on the PLC's network"
+    if "iso" in m and ("pdu" in m or "connect" in m or "negotiating" in m):
+        return "the PLC refused the connection: check rack and slot (S7-1200/1500: rack 0, slot 1; S7-300: rack 0, slot 2)"
+    return None
+
+
+def discover_db_numbers_sync(conn, max_db, out_queue=None, errors=None):
     """Blocking-safe (runs inside an already-running asyncio.run via a
     nested async function) probe of DB1..max_db. Returns a list of DB
-    numbers that responded. Pushes progress to out_queue if given."""
+    numbers that responded. Pushes progress to out_queue if given.
+    If `errors` is a list, every failed read is appended to it as (db, message), so
+    the caller can tell "no DB exists" from "the PLC refuses every read"."""
     from drivers.s7_driver import S7Driver
 
     async def run_probe():
@@ -266,12 +285,38 @@ def discover_db_numbers_sync(conn, max_db, out_queue=None):
             try:
                 await loop.run_in_executor(None, driver.client.db_read, db, 0, 4)
                 found.append(db)
-            except Exception:
-                pass
+            except Exception as exc:
+                if errors is not None:
+                    errors.append((db, str(exc)))
         await driver.disconnect()
         return found
 
     return asyncio.run(run_probe())
+
+
+def run_db_discovery(conn, max_db, out_queue):
+    """The background half of the "Discover DBs" button. Whatever happens it puts exactly one final message on out_queue, so the window
+    can always recover: ("db_discovery_done", (dbs, errors)) or ("db_discovery_error", text). (Before this, a failed connection killed the
+    thread silently and the button stayed disabled on "Probing..." for ever.)"""
+    errs = []
+    try:
+        dbs = discover_db_numbers_sync(conn, max_db, out_queue, errs)
+    except Exception as exc:
+        out_queue.put(("db_discovery_error", str(exc) or exc.__class__.__name__))
+        return
+    out_queue.put(("db_discovery_done", (dbs, errs)))
+
+
+def discovery_status(kind, data):
+    """(text, colour) for the status line of the "Discover DBs" row, from a final message of run_db_discovery."""
+    if kind == "db_discovery_error":
+        hint = explain_s7_error(data)
+        return f"Could not connect: {data}" + (f" -- {hint}" if hint else ""), "red"
+    dbs, errs = data
+    if dbs or not errs:
+        return f"Done -- {len(dbs)} DB(s) found", "gray"
+    hint = explain_s7_error(errs[0][1])
+    return f"Done -- 0 DB(s) found. DB{errs[0][0]}: {errs[0][1]}" + (f" -- {hint}" if hint else ""), "red"
 
 
 def type_label_for_tag(protocol, tag):
@@ -1353,7 +1398,7 @@ class ConnectionsScreen(ttk.Frame):
             max_db_entry.pack(side="left", padx=4)
             discover_btn = ttk.Button(discover_frame, text="Discover DBs")
             discover_btn.pack(side="left", padx=8)
-            discover_status = ttk.Label(discover_frame, text="", foreground="gray")
+            discover_status = ttk.Label(discover_frame, text="", foreground="gray", wraplength=380, justify="left")
             discover_status.pack(side="left", padx=8)
 
             discovered_list = tk.Listbox(single_frame, height=3, font=("Consolas", 9))
@@ -1385,8 +1430,7 @@ class ConnectionsScreen(ttk.Frame):
                 discovered_list.delete(0, "end")
 
                 def worker():
-                    dbs = discover_db_numbers_sync(conn, max_db, discover_out_queue)
-                    discover_out_queue.put(("db_discovery_done", dbs))
+                    run_db_discovery(conn, max_db, discover_out_queue)
 
                 threading.Thread(target=worker, daemon=True).start()
                 pump_discover()
@@ -1397,11 +1441,13 @@ class ConnectionsScreen(ttk.Frame):
                         kind, data = discover_out_queue.get_nowait()
                         if kind == "status":
                             discover_status.configure(text=data)
-                        elif kind == "db_discovery_done":
-                            for db in data:
-                                discovered_list.insert("end", f"DB{db}")
+                        elif kind in ("db_discovery_error", "db_discovery_done"):
+                            if kind == "db_discovery_done":
+                                for db in data[0]:
+                                    discovered_list.insert("end", f"DB{db}")
+                            text, colour = discovery_status(kind, data)
                             discover_btn.configure(state="normal")
-                            discover_status.configure(text=f"Done -- {len(data)} DB(s) found")
+                            discover_status.configure(text=text, foreground=colour)
                             return
                 except queue.Empty:
                     pass
