@@ -358,6 +358,34 @@ def type_label_for_tag(protocol, tag):
     return protocol
 
 
+def is_bit_packed_area(protocol, tag):
+    """True for memory that holds one digital signal per BIT (S7 process-image
+    inputs I and outputs Q). A 16-bit/float32 reading of such a word is
+    meaningless: it is 16 separate on/off channels, not a number. (Analog
+    channels also live in I/Q but as whole 16-bit words -- that is why the
+    int16 value stays visible.)"""
+    return protocol == "s7comm" and tag.get("area") in ("I", "Q")
+
+
+def s7_word_bits(area, start_byte, raw):
+    """Bits set in one S7 word read at `start_byte`: S7 is big-endian, so the
+    first byte is the HIGH byte. Returns [(byte, bit), ...]."""
+    out = []
+    for b in range(8):
+        if (raw >> (8 + b)) & 1:
+            out.append((start_byte, b))
+    for b in range(8):
+        if (raw >> b) & 1:
+            out.append((start_byte + 1, b))
+    return out
+
+
+def format_bits(area, bits, changed=()):
+    """'I0.3, I1.0*' (* = this bit changed during the scan)."""
+    changed = set(changed)
+    return ", ".join(f"{area}{b}.{k}" + ("*" if (b, k) in changed else "") for b, k in bits)
+
+
 def _raw_word_from_int16(decoded_value: int) -> int:
     """Reverses BaseDriver's int16 decode -- gets back the original raw
     16-bit register content from the signed value the scan stored."""
@@ -585,6 +613,16 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
             "raw_value": _raw_word_from_int16(vals_present[-1]),
             "type_label": type_label_for_tag(protocol, tag),
         })
+        if is_bit_packed_area(protocol, tag):
+            raws = [_raw_word_from_int16(v) for v in vals_present]
+            all_bits = set()
+            for rw in raws:
+                all_bits.update(s7_word_bits(tag["area"], tag["start_byte"], rw))
+            now = set(s7_word_bits(tag["area"], tag["start_byte"], raws[-1]))
+            ever_changed = {bt for bt in all_bits if len({bt in set(s7_word_bits(tag["area"], tag["start_byte"], rw)) for rw in raws}) > 1}
+            results[-1]["bit_area"] = True
+            results[-1]["bits_on"] = sorted(now)
+            results[-1]["bits_changed"] = sorted(ever_changed)
 
     # 32-bit pairing: adjacent entries in `tags` are adjacent addresses
     # by construction (build_range_tags steps by 1 device number or 2
@@ -609,6 +647,8 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
     for i, tag in enumerate(tags[:-1]):
         name = tag["name"]
         next_name = tags[i + 1]["name"]
+        if result_by_name.get(name, {}).get("bit_area") or result_by_name.get(next_name, {}).get("bit_area"):
+            continue  # digital inputs/outputs are bits, not numbers: no 32-bit/float reading
         if name in latest_by_name and next_name in latest_by_name:
             result_by_name[name]["candidates_32bit"] = compute_32bit_candidates(
                 latest_by_name[name], latest_by_name[next_name]
@@ -2327,7 +2367,7 @@ class ScanResultsScreen(ttk.Frame):
             ("connection", "Connection", 110), ("job", "Scan job", 120), ("type", "Type", 50),
             ("address", "Address", 100), ("changed", "Changed?", 70),
             ("raw", "Raw value", 120), ("latest", "As int16", 80),
-            ("float_guess", "Possible float32", 150), ("match", "Search match", 160),
+            ("float_guess", "Possible float32 / bits on (* = changed)", 230), ("match", "Search match", 160),
         ]
         for col, label, w in headings:
             self.tree.heading(col, text=label)
@@ -2419,6 +2459,9 @@ class ScanResultsScreen(ttk.Frame):
             iid = f"{r['conn_name']}::{r['job_label']}::{r['name']}::{i}"
             float_guess = r.get("float32_guess")
             float_text = f"{float_guess} (with {r.get('float32_pair_with')})" if float_guess is not None else "--"
+            if r.get("bit_area"):
+                area = r["tag"]["area"]
+                float_text = ("bits on: " + format_bits(area, r["bits_on"], r["bits_changed"])) if r["bits_on"] or r["bits_changed"] else "no bits on"
             raw = r.get("raw_value")
             raw_text = f"{raw} (0x{raw:04X})" if raw is not None else "--"
             self.tree.insert("", "end", iid=iid, values=(
@@ -2456,6 +2499,24 @@ class ScanResultsScreen(ttk.Frame):
             if not conn:
                 missing_conn += 1
                 continue
+            if r.get("bit_area"):
+                # I/Q rows are bits: add one bit tag per changed bit (or per bit that is on).
+                pick = r["bits_changed"] or r["bits_on"]
+                new_tags = []
+                for byte, bit in pick:
+                    nm = f"{r['tag']['area']}{byte}.{bit}"
+                    new_tags.append({"name": nm, "area": r["tag"]["area"], "db_number": r["tag"].get("db_number", 1),
+                                     "start_byte": byte, "bit_offset": bit, "data_type": "bit",
+                                     "multiplier": 1.0, "offset": 0.0, "mqtt_key": nm})
+                if not new_tags:
+                    skipped += 1
+                for tag in new_tags:
+                    if any(t["name"] == tag["name"] for t in conn.tags):
+                        skipped += 1
+                    else:
+                        conn.tags.append(tag)
+                        added += 1
+                continue
             tag = dict(r["tag"])
             if any(t["name"] == tag["name"] for t in conn.tags):
                 skipped += 1
@@ -2469,7 +2530,7 @@ class ScanResultsScreen(ttk.Frame):
         messagebox.showinfo(
             "Added", f"Added {added} tag(s), skipped {skipped} (already existed), "
                      f"{missing_conn} referenced a connection that no longer exists.\n"
-                     f"Check data types in Manage Tags -- the scan assumes int16."
+                     f"Check data types in Manage Tags -- the scan assumes int16 for words (I/Q rows are added as single bit tags)."
         )
 
     def clear_results(self):
@@ -2805,6 +2866,9 @@ class App(tk.Tk):
                             "raw_value": r.get("raw_value"),
                             "type_label": r.get("type_label", "?"),
                             "candidates_32bit": r.get("candidates_32bit", {}),
+                            "bit_area": r.get("bit_area", False),
+                            "bits_on": r.get("bits_on", []),
+                            "bits_changed": r.get("bits_changed", []),
                         })
                     if "scan_results" in self.screens:
                         self.screens["scan_results"].refresh()
