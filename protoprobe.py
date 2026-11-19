@@ -1348,7 +1348,7 @@ class ConnectionsScreen(ttk.Frame):
 
         win = tk.Toplevel(self)
         win.title(f"Scan for live tags -- {conn.name}")
-        win.geometry("640x560")
+        win.geometry("640x720")
         win.grab_set()
 
         ttk.Label(
@@ -1424,8 +1424,10 @@ class ConnectionsScreen(ttk.Frame):
             max_db_entry.pack(side="left", padx=4)
             discover_btn = ttk.Button(discover_frame, text="Discover DBs")
             discover_btn.pack(side="left", padx=8)
-            discover_status = ttk.Label(discover_frame, text="", foreground="gray", wraplength=380, justify="left")
-            discover_status.pack(side="left", padx=8)
+            # On its own full-width line: the messages (an error and its hint) are long and were cut off at the window edge when they
+            # shared the row with the button.
+            discover_status = ttk.Label(single_frame, text="", foreground="gray", wraplength=590, justify="left")
+            discover_status.pack(anchor="w", padx=8, pady=(0, 2))
 
             discovered_list = tk.Listbox(single_frame, height=3, font=("Consolas", 9))
             discovered_list.pack(fill="x", padx=8, pady=(0, 4))
