@@ -58,6 +58,7 @@ import output_json
 import tag_import
 import workspace
 import arpscan
+import modbus_scan
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
@@ -68,6 +69,7 @@ NAV_ITEMS = [
     ("oee", "OEE config"),
     ("output", "Output"),
     ("network", "Network tools"),
+    ("modbus_test", "Modbus test"),
     ("settings", "Settings"),
 ]
 
@@ -3903,6 +3905,189 @@ class PlaceholderScreen(ttk.Frame):
 
 # --- Settings ------------------------------------------------------------------
 
+class ModbusTestScreen(ttk.Frame):
+    """A ModScan-style Modbus TCP master for testing a device on site (modbus_scan.py). READ ONLY: functions 1 to 4, nothing is ever written."""
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.stats = modbus_scan.Stats()
+        self._queue = queue.Queue()
+        self._polling = False
+        self._busy = False
+        self._stop_sweep = False
+        self._tid = 0
+        ttk.Label(self, text="Modbus test", font=("Segoe UI", 16)).pack(anchor="w", padx=20, pady=(20, 2))
+        ttk.Label(self, foreground="gray", wraplength=1000, justify="left",
+                  text="Read a Modbus TCP device the way ModScan does: see the registers in decimal, hex, binary and as 32-bit numbers, the raw bytes, "
+                       "the device's error in words, and find which unit IDs answer. Reading only: there is no write function in this tool.").pack(anchor="w", padx=20)
+        form = ttk.Frame(self)
+        form.pack(fill="x", padx=20, pady=8)
+        self.host = self._entry(form, "IP address", "", 16)
+        self.port = self._entry(form, "Port", "502", 6)
+        self.unit = self._entry(form, "Unit ID", "1", 5)
+        ttk.Label(form, text="Function").pack(side="left")
+        self.fn = ttk.Combobox(form, state="readonly", width=24, values=list(modbus_scan.FUNCTIONS.values()))
+        self.fn.current(2)
+        self.fn.pack(side="left", padx=(2, 10))
+        form2 = ttk.Frame(self)
+        form2.pack(fill="x", padx=20, pady=(0, 6))
+        self.start = self._entry(form2, "Start address", "0", 7)
+        self.count = self._entry(form2, "Count", "10", 5)
+        self.base = tk.IntVar(value=0)
+        ttk.Label(form2, text="Address base").pack(side="left")
+        ttk.Radiobutton(form2, text="0", variable=self.base, value=0, command=self._redraw).pack(side="left")
+        ttk.Radiobutton(form2, text="1", variable=self.base, value=1, command=self._redraw).pack(side="left", padx=(0, 10))
+        ttk.Label(form2, text="32-bit order").pack(side="left")
+        self.order = ttk.Combobox(form2, state="readonly", width=22, values=list(modbus_scan.WORD_ORDERS.values()))
+        self.order.current(0)
+        self.order.bind("<<ComboboxSelected>>", lambda e: self._redraw())
+        self.order.pack(side="left", padx=(2, 10))
+        self.timeout = self._entry(form2, "Timeout (s)", "2", 4)
+        self.every = self._entry(form2, "Poll every (s)", "1", 4)
+        btns = ttk.Frame(self)
+        btns.pack(fill="x", padx=20, pady=4)
+        ttk.Button(btns, text="Read once", command=self.read_once).pack(side="left")
+        self.poll_btn = ttk.Button(btns, text="Start polling", command=self.toggle_poll)
+        self.poll_btn.pack(side="left", padx=6)
+        ttk.Button(btns, text="Find unit IDs (1-247)", command=self.sweep).pack(side="left")
+        ttk.Button(btns, text="Reset counters", command=self.reset_stats).pack(side="left", padx=6)
+        ttk.Button(btns, text="Copy table", command=self.copy_table).pack(side="right")
+        self.status = ttk.Label(self, text="", foreground="gray", wraplength=1000, justify="left")
+        self.status.pack(anchor="w", padx=20)
+        self.stats_label = ttk.Label(self, text=self.stats.line(), foreground="gray")
+        self.stats_label.pack(anchor="w", padx=20)
+        cols = ("address", "unsigned", "signed", "hex", "binary", "uint32", "int32", "float32")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
+        for col, w in (("address", 70), ("unsigned", 80), ("signed", 80), ("hex", 80), ("binary", 150), ("uint32", 100), ("int32", 100), ("float32", 110)):
+            self.tree.heading(col, text=col + (" (with next)" if col in ("uint32", "int32", "float32") else ""))
+            self.tree.column(col, width=w, anchor="center", stretch=False)
+        self.tree.pack(fill="both", expand=True, padx=20, pady=6)
+        self.raw = tk.Text(self, height=4, font=("Consolas", 9))
+        self.app.dark_aware_texts.append(self.raw)
+        self.raw.pack(fill="x", padx=20, pady=(0, 10))
+        self._last = None
+        self.after(150, self._pump)
+
+    def _entry(self, parent, label, default, width):
+        ttk.Label(parent, text=label).pack(side="left")
+        e = ttk.Entry(parent, width=width)
+        e.insert(0, default)
+        e.pack(side="left", padx=(2, 10))
+        return e
+
+    def _params(self):
+        try:
+            fn = list(modbus_scan.FUNCTIONS)[self.fn.current()]
+            return dict(host=self.host.get().strip(), port=int(self.port.get()), unit=int(self.unit.get()), fn=fn, start=int(self.start.get()),
+                        count=int(self.count.get()), timeout=float(self.timeout.get()))
+        except ValueError:
+            self.status.configure(text="Port, unit, start, count and timeout must be numbers.", foreground="#c0392b")
+            return None
+
+    def read_once(self):
+        p = self._params()
+        if not p or self._busy:
+            return
+        if not p["host"]:
+            self.status.configure(text="Enter the device's IP address first.", foreground="#c0392b")
+            return
+        try:
+            modbus_scan.build_request(1, p["unit"], p["fn"], p["start"], p["count"])
+        except ValueError as exc:
+            self.status.configure(text=str(exc), foreground="#c0392b")
+            return
+        self._busy = True
+        self._tid += 1
+        tid = self._tid
+
+        def work():
+            try:
+                res = modbus_scan.read(p["host"], p["port"], p["unit"], p["fn"], p["start"], p["count"], p["timeout"], self.stats, tid)
+                self._queue.put(("ok", p, res))
+            except modbus_scan.ModbusError as exc:
+                self._queue.put(("error", p, exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pump(self):
+        try:
+            while True:
+                kind, p, payload = self._queue.get_nowait()
+                if kind == "sweep":
+                    self.status.configure(text=payload, foreground="gray")
+                    continue
+                self._busy = False
+                if kind == "ok":
+                    self._last = (p, payload["values"])
+                    self.status.configure(text=f"OK: {len(payload['values'])} value(s) in {payload['ms']:.0f} ms", foreground="#27ae60")
+                    self._show_raw(payload["request"], payload["response"])
+                    self._redraw()
+                else:
+                    self.status.configure(text=str(payload), foreground="#c0392b")
+                    self._show_raw(getattr(payload, "request", b""), getattr(payload, "response", b""))
+                self.stats_label.configure(text=self.stats.line())
+        except queue.Empty:
+            pass
+        if self._polling and not self._busy:
+            self.read_once()
+        try:
+            self.after(max(150, int(float(self.every.get() or 1) * 1000)) if self._polling else 150, self._pump)
+        except ValueError:
+            self.after(1000, self._pump)
+
+    def _show_raw(self, req, resp):
+        self.raw.delete("1.0", "end")
+        self.raw.insert("1.0", "Request : " + modbus_scan.hexdump(req) + "\nResponse: " + (modbus_scan.hexdump(resp) if resp else "(none)"))
+
+    def _redraw(self):
+        self.tree.delete(*self.tree.get_children())
+        if not self._last:
+            return
+        p, values = self._last
+        order = list(modbus_scan.WORD_ORDERS)[self.order.current()]
+        if p["fn"] in (1, 2):
+            self.tree.configure(columns=("address", "unsigned"))
+            self.tree.heading("address", text="address")
+            self.tree.heading("unsigned", text="value")
+            for r in modbus_scan.describe_bits(values, p["start"], self.base.get()):
+                self.tree.insert("", "end", values=(r["address"], r["value"]))
+            return
+        self.tree.configure(columns=("address", "unsigned", "signed", "hex", "binary", "uint32", "int32", "float32"))
+        for col in ("address", "unsigned", "signed", "hex", "binary", "uint32", "int32", "float32"):
+            self.tree.heading(col, text=col + (" (with next)" if col in ("uint32", "int32", "float32") else ""))
+        for r in modbus_scan.describe_words(values, p["start"], self.base.get(), order):
+            f = r["float32"]
+            self.tree.insert("", "end", values=(r["address"], r["unsigned"], r["signed"], r["hex"], r["binary"],
+                                                "" if r["uint32"] is None else r["uint32"], "" if r["int32"] is None else r["int32"],
+                                                "" if f is None else f"{f:.6g}"))
+
+    def toggle_poll(self):
+        self._polling = not self._polling
+        self.poll_btn.configure(text="Stop polling" if self._polling else "Start polling")
+
+    def reset_stats(self):
+        self.stats = modbus_scan.Stats()
+        self.stats_label.configure(text=self.stats.line())
+
+    def copy_table(self):
+        lines = ["\t".join(self.tree["columns"])] + ["\t".join(str(v) for v in self.tree.item(i)["values"]) for i in self.tree.get_children()]
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(lines))
+
+    def sweep(self):
+        p = self._params()
+        if not p or not p["host"]:
+            self.status.configure(text="Enter the IP address first.", foreground="#c0392b")
+            return
+        self.status.configure(text="Asking unit IDs 1 to 247 (a silent one waits 0.6 s)...", foreground="gray")
+
+        def work():
+            found = modbus_scan.sweep_units(p["host"], p["port"], range(1, 248), p["fn"], p["start"], 0.6,
+                                            progress=lambda n, total: self._queue.put(("sweep", p, f"Asking unit IDs... {n} of {total}")) if n % 20 == 0 else None)
+            text = ("Unit IDs that answered: " + "; ".join(f"{u} ({why})" for u, why in found)) if found else "No unit ID answered."
+            self._queue.put(("sweep", p, text))
+        threading.Thread(target=work, daemon=True).start()
+
+
 class SettingsScreen(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -4145,6 +4330,7 @@ class App(tk.Tk):
         self.screens["output"] = OutputScreen(content, self)
         self.output_screen = self.screens["output"]
         self.screens["network"] = NetworkToolsScreen(content, self)
+        self.screens["modbus_test"] = ModbusTestScreen(content, self)
         self.screens["settings"] = SettingsScreen(content, self)
 
         for screen in self.screens.values():
