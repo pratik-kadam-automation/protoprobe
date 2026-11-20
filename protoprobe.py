@@ -343,6 +343,15 @@ def discovery_status(kind, data):
     dbs, errs = data
     if dbs or not errs:
         return f"Done -- {len(dbs)} DB(s) found", "gray"
+    missing = [(d, m) for d, m in errs if "does not exist" in m.lower()]
+    refused = [(d, m) for d, m in errs if "does not exist" not in m.lower()]
+    if missing and refused:
+        # The PLC answers differently for a DB that is not there and for one that is there but refuses the read: the second kind exists.
+        names = ", ".join(f"DB{d}" for d, _m in refused[:8]) + (" ..." if len(refused) > 8 else "")
+        reason = refused[0][1]
+        return (f"Done -- 0 readable. {names} {'exists' if len(refused) == 1 else 'exist'} but refuse{'s' if len(refused) == 1 else ''} the read ({reason}): "
+                f"most likely 'Optimized block access' is still on for it, or the CPU's protection blocks it. "
+                f"The other {len(missing)} probed DB(s) do not exist."), "red"
     counts = {}
     for _db, msg in errs:
         counts[msg] = counts.get(msg, 0) + 1

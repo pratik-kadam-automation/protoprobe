@@ -79,6 +79,14 @@ class DiscoverDbs(unittest.TestCase):
         self.assertIn("5 x", text)
         self.assertEqual(colour, "red")
 
+    def test_a_db_that_refuses_is_named_as_existing(self):
+        errs = [(d, "Read operation failed: Object does not exist (0x0a)") for d in (1, 2, 3, 5)] + [(4, "Read operation failed: Invalid address (0x05)")]
+        text, colour = protoprobe.discovery_status("db_discovery_done", ([], errs))
+        self.assertIn("DB4 exists but refuses", text)
+        self.assertIn("Optimized block access", text)
+        self.assertIn("other 4 probed", text)
+        self.assertEqual(colour, "red")
+
     def test_zero_found_because_the_dbs_do_not_exist_or_are_optimized(self):
         text, _ = protoprobe.discovery_status(*run(2, existing=())[-1])
         self.assertIn("Optimized block access", text.replace("optimized block access", "Optimized block access"))
