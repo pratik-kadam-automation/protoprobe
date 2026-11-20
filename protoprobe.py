@@ -1517,7 +1517,7 @@ class ConnectionsScreen(ttk.Frame):
 
         win = tk.Toplevel(self)
         win.title(f"Scan for live tags -- {conn.name}")
-        win.geometry("640x720")
+        win.geometry("640x850")
         win.grab_set()
 
         ttk.Label(
@@ -1539,6 +1539,17 @@ class ConnectionsScreen(ttk.Frame):
         delay_entry = ttk.Entry(opt_row, width=6)
         delay_entry.insert(0, "2")
         delay_entry.pack(side="left", padx=(2, 12))
+
+        presets = plc_catalog.scan_presets(getattr(conn, "plc_type", None) or plc_catalog.default_type(conn.protocol))
+        if presets:
+            preset_row = ttk.Frame(win)
+            preset_row.pack(fill="x", padx=10, pady=(4, 0))
+            ttk.Label(preset_row, text="Preset").pack(side="left")
+            preset_cb = ttk.Combobox(preset_row, values=["(none)"] + [p.label for p in presets], state="readonly", width=56)
+            preset_cb.set("(none)")
+            preset_cb.pack(side="left", padx=6)
+            preset_note = ttk.Label(win, text="", foreground="gray", wraplength=600, justify="left")
+            preset_note.pack(anchor="w", padx=10)
 
         # ---- Section 1: single area/range (a quick, targeted check) ----
         single_frame = ttk.LabelFrame(win, text="Scan a single area/range")
@@ -1578,10 +1589,10 @@ class ConnectionsScreen(ttk.Frame):
 
         if conn.protocol == "s7comm":
             ttk.Label(
-                single_frame, text="Note: for area I/Q, manual entry in Manage Tags is usually "
-                          "better -- those bits map to physical wiring you probably already "
-                          "have documented. M has no wiring to reference, so scanning it is "
-                          "worthwhile. db_number is ignored unless area = DB.",
+                single_frame, text="Note: scanning I or Q shows which bits are on and which changed; use 'Add selected' "
+                          "in the results to make bit tags from them. Markers (M) have no wiring to "
+                          "check against, so scanning them is the way to find what moves. "
+                          "db_number is ignored unless area = DB.",
                 wraplength=600, foreground="gray", justify="left",
             ).pack(anchor="w", padx=8, pady=(0, 4))
 
@@ -1724,9 +1735,8 @@ class ConnectionsScreen(ttk.Frame):
                 ttk.Checkbutton(code_row, text=area, variable=v).pack(side="left", padx=6)
                 checkbox_vars[area] = v
             ttk.Label(
-                full_frame, text="DB auto-discovers which DB numbers exist first. I/Q left "
-                          "unchecked by default -- manual entry from wiring docs is usually "
-                          "better for those.",
+                full_frame, text="DB auto-discovers which DB numbers exist first (a DB with optimized "
+                          "block access cannot be read and is reported). I and Q rows show bits.",
                 wraplength=600, foreground="gray", justify="left",
             ).pack(anchor="w", padx=8, pady=(2, 0))
             max_row = ttk.Frame(full_frame)
@@ -1750,6 +1760,32 @@ class ConnectionsScreen(ttk.Frame):
             max_addr_entry = ttk.Entry(max_row, width=8)
             max_addr_entry.insert(0, "2000")
             max_addr_entry.pack(side="left", padx=6)
+
+        if presets:
+            def apply_preset(*_):
+                chosen = next((p for p in presets if p.label == preset_cb.get()), None)
+                if chosen is None:
+                    preset_note.configure(text="")
+                    return
+                for key, value in chosen.single.items():
+                    entry = range_entries.get(key)
+                    if entry is None:
+                        continue
+                    if isinstance(entry, ttk.Combobox):
+                        entry.set(str(value))
+                    else:
+                        entry.delete(0, "end")
+                        entry.insert(0, str(value))
+                if chosen.full:
+                    for key, var in checkbox_vars.items():
+                        var.set(key in chosen.full.get("include", ()))
+                    if "max" in chosen.full:
+                        max_addr_entry.delete(0, "end")
+                        max_addr_entry.insert(0, str(chosen.full["max"]))
+                preset_note.configure(text=chosen.note + ("  (fills the whole-PLC section below; press Start full PLC scan)" if chosen.full else
+                                                          "  (fills the single-area fields; press Start scan)"))
+
+            preset_cb.bind("<<ComboboxSelected>>", apply_preset)
 
         def start_full_scan():
             selected = [k for k, v in checkbox_vars.items() if v.get()]

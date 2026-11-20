@@ -117,3 +117,25 @@ class DropdownHelpers(unittest.TestCase):
         self.assertIn("PUT/GET", pc.describe("S7_1200"))
         for p in pc.CATALOG:                       # never raises, whatever the type
             self.assertTrue(pc.describe(p.key))
+
+
+class ScanPresets(unittest.TestCase):
+    def test_every_connectable_type_has_presets_and_the_others_none(self):
+        import plc_catalog as pc
+        for p in pc.CATALOG:
+            self.assertEqual(bool(pc.scan_presets(p.key)), bool(p.driver), p.key)
+
+    def test_s7_presets_use_the_scan_windows_field_names(self):
+        import plc_catalog as pc
+        for preset in pc.scan_presets("S7_1200"):
+            self.assertTrue(set(preset.single) <= {"area", "db_number", "start", "end"}, preset.label)
+            if preset.single:
+                self.assertLessEqual(preset.single["start"], preset.single["end"])
+        full = [p for p in pc.scan_presets("S7_1200") if p.full][0]
+        self.assertEqual(set(full.full["include"]), {"I", "Q", "M"})
+
+    def test_default_type_per_protocol(self):
+        import plc_catalog as pc
+        for protocol in ("s7comm", "mc_protocol_3e", "modbus_tcp", "modbus_rtu"):
+            self.assertTrue(pc.scan_presets(pc.default_type(protocol)), protocol)
+        self.assertIsNone(pc.default_type("opcua"))

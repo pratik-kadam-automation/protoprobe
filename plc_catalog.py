@@ -131,6 +131,60 @@ def address_preview(key, flag, number):
     return f"{text}({area.width})"
 
 
+@dataclass(frozen=True)
+class ScanPreset:
+    """A ready-made scan for the Scan for live tags window. `single` fills the single area/range fields (the window's own field names);
+    `full` sets the whole-PLC checkboxes (`include`) and the max address (`max`). Ranges are starting points, not the PLC's real sizes:
+    the Siemens scan stops at the end of the memory the PLC really has."""
+    label: str
+    single: dict = field(default_factory=dict)
+    full: dict = field(default_factory=dict)
+    note: str = ""
+
+
+_DEFAULT_TYPE_FOR_PROTOCOL = {"s7comm": "S7_1200", "mc_protocol_3e": "Q_TCP", "modbus_tcp": "Modbus_TCP", "modbus_rtu": "Modbus_RTU"}
+
+
+def default_type(protocol):
+    """The catalog type whose presets to use for a connection that was made by choosing only a protocol."""
+    return _DEFAULT_TYPE_FOR_PROTOCOL.get(protocol)
+
+
+def scan_presets(key):
+    """Scan presets for a PLC type ProtoProbe can connect to; [] for the others."""
+    p = _CAT_BY_KEY.get(key)
+    if p is None or not p.driver:
+        return []
+    if p.driver == "s7comm":
+        return [
+            ScanPreset("Inputs I, bytes 0-63", {"area": "I", "start": 0, "end": 63},
+                       note="Digital inputs: the results show which bits are on, and which changed. Operate a switch or sensor during the scan."),
+            ScanPreset("Outputs Q, bytes 0-63", {"area": "Q", "start": 0, "end": 63},
+                       note="Digital outputs: the results show which bits are on, and which changed."),
+            ScanPreset("Markers M, bytes 0-255", {"area": "M", "start": 0, "end": 255},
+                       note="Internal flags and counters. Clock-memory bits blink on their own, so many rows may show 'changed'."),
+            ScanPreset("Everything except data blocks (I, Q, M)", full={"include": ("I", "Q", "M"), "max": 2000},
+                       note="One background job over inputs, outputs and markers. The scan stops where the PLC's memory ends."),
+            ScanPreset("A data block: DB1, bytes 0-99", {"area": "DB", "db_number": 1, "start": 0, "end": 99},
+                       note="Only works for a DB with 'Optimized block access' OFF and PUT/GET allowed. Use Discover DBs to find DB numbers."),
+        ]
+    if p.driver == "mc_protocol_3e":
+        return [
+            ScanPreset("Data registers D0-D199", {"device_code": "D", "start": 0, "end": 199}),
+            ScanPreset("Internal relays M0-M99 (as words)", {"device_code": "M", "start": 0, "end": 99}),
+            ScanPreset("File registers R0-R99", {"device_code": "R", "start": 0, "end": 99}),
+            ScanPreset("Link registers W0-W99", {"device_code": "W", "start": 0, "end": 99}),
+            ScanPreset("D and M, up to 2000", full={"include": ("D", "M"), "max": 2000},
+                       note="One background job. A big range takes minutes: check the estimate before you confirm."),
+        ]
+    return [
+        ScanPreset("Holding registers 0-99", {"register_type": "holding", "start": 0, "end": 99}),
+        ScanPreset("Holding registers 100-199", {"register_type": "holding", "start": 100, "end": 199}),
+        ScanPreset("Input registers 0-99", {"register_type": "input", "start": 0, "end": 99}),
+        ScanPreset("Holding and input registers, up to 500", full={"include": ("holding", "input"), "max": 500}),
+    ]
+
+
 def dropdown_entries():
     """[(text, key)] for a PLC-type dropdown: every gateway protocol, in the gateway's order. Types ProtoProbe cannot connect to yet say so."""
     return [(f"{p.key}  --  {p.label}" + ("" if p.driver else "   [not supported yet]"), p.key) for p in CATALOG]
