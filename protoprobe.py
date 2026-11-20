@@ -51,6 +51,7 @@ from drivers.bacnet_driver import BACnetDriver
 from commissioning_screen import CommissioningScreen
 from plc_reader import build_range_tags
 import plc_catalog
+import s7_address
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
@@ -255,9 +256,9 @@ def explain_s7_error(message):
     """A plain-words hint for a snap7 error text, for when a probe or read of a DB fails. The texts are snap7's (they vary a little
     between versions), so this matches on the words that matter and returns None when it does not know the error."""
     m = str(message).lower()
-    if "address out of range" in m or "item not available" in m or "invalid address" in m:
-        return ("that DB does not exist, or it uses 'optimized block access' (then absolute addresses cannot be read: "
-                "in TIA Portal turn off 'Optimized block access' for that DB and compile)")
+    if "address out of range" in m or "item not available" in m or "invalid address" in m or "does not exist" in m:
+        return ("that DB does not exist, or it has no variables yet (size 0), or it uses 'optimized block access' (then absolute addresses "
+                "cannot be read: in TIA Portal turn off 'Optimized block access' for that DB and compile)")
     if "function not available" in m or "not allowed" in m or "access to object" in m or "protection" in m:
         return ("the PLC refuses the read: in TIA Portal enable 'Permit access with PUT/GET communication from remote partner' "
                 "(S7-1200/1500) and check the CPU's protection level")
@@ -266,6 +267,43 @@ def explain_s7_error(message):
     if "iso" in m and ("pdu" in m or "connect" in m or "negotiating" in m):
         return "the PLC refused the connection: check rack and slot (S7-1200/1500: rack 0, slot 1; S7-300: rack 0, slot 2)"
     return None
+
+
+def read_tag_once(conn, tag, driver_factory=None):
+    """Read ONE tag once, with the connection's own settings: (value, None) or (None, "what went wrong"). For the Test read button. The drivers
+    log a failed tag instead of raising, so their warning text is collected and returned as the reason."""
+    collector = PollLogCollector()
+    loggers = [logging.getLogger(n) for n in DRIVER_LOGGERS]
+    for lg in loggers:
+        lg.addHandler(collector)
+    entry = {"multiplier": 1.0, "offset": 0.0, "mqtt_key": tag["name"]}
+    entry.update(tag)
+    cfg = {"interface": conn.interface, "tags": [entry]}
+    if conn.protocol in ("modbus_tcp", "modbus_rtu"):
+        cfg = {"interface": conn.interface, "devices": [{"unit_id": conn.interface.get("unit_id", 1), "tags": [entry]}]}
+    factory = driver_factory or DRIVER_FACTORY
+
+    async def run():
+        driver = factory[conn.protocol](cfg)
+        await driver.connect()
+        try:
+            return await driver.poll()
+        finally:
+            try:
+                await driver.disconnect()
+            except Exception:
+                pass
+
+    try:
+        values = asyncio.run(run())
+    except Exception as exc:
+        return None, str(exc) or exc.__class__.__name__
+    finally:
+        for lg in loggers:
+            lg.removeHandler(collector)
+    if tag["name"] in values:
+        return values[tag["name"]], None
+    return None, collector.errors.get(tag["name"]) or next(iter(collector.errors.values()), "no value came back")
 
 
 def discover_db_numbers_sync(conn, max_db, out_queue=None, errors=None):
@@ -1438,6 +1476,142 @@ class ConnectionsScreen(ttk.Frame):
         self.refresh()
         self.app.refresh_dashboard()
 
+    def _s7_guided_dialog(self, parent, conn, on_saved):
+        """Add one Siemens tag the way the gateway's own dialog does it: pick the register type, enter the address, see the address spelled out,
+        choose the data type, press Test read to see the value right away."""
+        win = tk.Toplevel(parent)
+        win.title("Add Siemens tag")
+        win.geometry("640x640")
+        win.grab_set()
+
+        ttk.Label(win, text="Tag name").pack(anchor="w", padx=10, pady=(10, 0))
+        name_var = tk.StringVar(value=f"Tag{len(conn.tags) + 1}")
+        ttk.Entry(win, textvariable=name_var, width=40).pack(anchor="w", padx=10)
+
+        ttk.Label(win, text="1. Choose the register type", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
+        grid = ttk.Frame(win)
+        grid.pack(anchor="w", padx=10)
+        choice = tk.StringVar(value="M|bit")
+        titles = {"bit": "Bit (1 bit)", "byte": "Byte (8 bit)", "word": "Word (16 bit)", "dword": "DWord (32 bit)"}
+        for c, width in enumerate(s7_address.WIDTHS, start=1):
+            ttk.Label(grid, text=titles[width]).grid(row=0, column=c, padx=4, pady=2)
+        labels = {"I": ("I", "IB", "IW", "ID"), "Q": ("Q", "QB", "QW", "QD"), "M": ("M", "MB", "MW", "MD"),
+                  "DB": ("DBn.DBX", "DBn.DBB", "DBn.DBW", "DBn.DBD")}
+        rows = {"I": "I (Input)", "Q": "Q (Output)", "M": "M (Bit memory)", "DB": "DB (Data block)"}
+        for r, area in enumerate(s7_address.AREAS, start=1):
+            ttk.Label(grid, text=rows[area], width=16).grid(row=r, column=0, sticky="w")
+            for c, width in enumerate(s7_address.WIDTHS, start=1):
+                ttk.Radiobutton(grid, text=labels[area][c - 1], style="Toolbutton", width=9, variable=choice, value=f"{area}|{width}",
+                                state="normal" if s7_address.readable(width) else "disabled").grid(row=r, column=c, padx=3, pady=2)
+        ttk.Label(win, text="Byte values (IB, MB, DBB) are greyed out: ProtoProbe cannot read single bytes yet.", foreground="gray").pack(
+            anchor="w", padx=10)
+
+        ttk.Label(win, text="2. Enter the address", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
+        addr = ttk.Frame(win)
+        addr.pack(anchor="w", padx=10)
+        db_var, byte_var, bit_var = tk.StringVar(value="1"), tk.StringVar(value="0"), tk.StringVar(value="0")
+        ttk.Label(addr, text="DB number").grid(row=0, column=0, padx=4)
+        db_entry = ttk.Entry(addr, textvariable=db_var, width=8)
+        db_entry.grid(row=1, column=0, padx=4)
+        ttk.Label(addr, text="Byte offset").grid(row=0, column=1, padx=4)
+        ttk.Entry(addr, textvariable=byte_var, width=8).grid(row=1, column=1, padx=4)
+        ttk.Label(addr, text="Bit (0-7)").grid(row=0, column=2, padx=4)
+        bit_entry = ttk.Entry(addr, textvariable=bit_var, width=8)
+        bit_entry.grid(row=1, column=2, padx=4)
+
+        preview = ttk.Label(win, text="", font=("Consolas", 12, "bold"))
+        preview.pack(anchor="w", padx=10, pady=(10, 0))
+
+        ttk.Label(win, text="3. Data type and scaling", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
+        dt = ttk.Frame(win)
+        dt.pack(anchor="w", padx=10)
+        type_var, scale_var, offset_var, unit_var = tk.StringVar(), tk.StringVar(value="1"), tk.StringVar(value="0"), tk.StringVar()
+        ttk.Label(dt, text="Data type").grid(row=0, column=0, sticky="w", padx=4)
+        type_cb = ttk.Combobox(dt, textvariable=type_var, state="readonly", width=18)
+        type_cb.grid(row=0, column=1, padx=4)
+        for i, (text, var) in enumerate((("Scale", scale_var), ("Offset", offset_var), ("Unit", unit_var)), start=1):
+            ttk.Label(dt, text=text).grid(row=i, column=0, sticky="w", padx=4, pady=2)
+            ttk.Entry(dt, textvariable=var, width=20).grid(row=i, column=1, padx=4, pady=2)
+
+        result = ttk.Label(win, text="", wraplength=600, justify="left")
+        result.pack(anchor="w", padx=10, pady=(10, 0))
+
+        def current():
+            area, width = choice.get().split("|")
+            return area, width
+
+        def build():
+            area, width = current()
+            return s7_address.build_tag(name_var.get(), area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0,
+                                        type_var.get() or None, float(scale_var.get() or 1), float(offset_var.get() or 0), unit_var.get().strip())
+
+        def update(*_):
+            area, width = current()
+            options = s7_address.data_types_for(width)
+            type_cb.configure(values=options)
+            if type_var.get() not in options:
+                type_var.set(options[0] if options else "")
+            db_entry.configure(state="normal" if area == "DB" else "disabled")
+            bit_entry.configure(state="normal" if width == "bit" else "disabled")
+            try:
+                text = s7_address.address_text(area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0)
+                preview.configure(text=f"{text}   ({s7_address.friendly_type(type_var.get())})", foreground="#2e7d32")
+            except ValueError as exc:
+                preview.configure(text=str(exc), foreground="#c62828")
+
+        for var in (choice, db_var, byte_var, bit_var, type_var):
+            var.trace_add("write", update)
+        update()
+
+        test_queue = queue.Queue()
+
+        def test_read():
+            try:
+                tag = build()
+            except ValueError as exc:
+                result.configure(text=str(exc), foreground="#c62828")
+                return
+            result.configure(text="Reading...", foreground="gray")
+
+            def worker():
+                test_queue.put(read_tag_once(conn, tag))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+            def check():
+                try:
+                    value, error = test_queue.get_nowait()
+                except queue.Empty:
+                    win.after(150, check)
+                    return
+                if error is None:
+                    result.configure(text=f"\u25cf Read OK: {show_value(value)}", foreground="#2e7d32")
+                else:
+                    hint = explain_s7_error(error)
+                    result.configure(text=f"\u25cf Read failed: {error}" + (f"\n{hint}" if hint else ""), foreground="#c62828")
+
+            win.after(150, check)
+
+        def save():
+            try:
+                tag = build()
+            except ValueError as exc:
+                messagebox.showerror("Cannot add", str(exc))
+                return
+            if any(t["name"] == tag["name"] for t in conn.tags):
+                messagebox.showerror("Duplicate", f"Tag '{tag['name']}' already exists")
+                return
+            conn.tags.append(tag)
+            on_saved()
+            win.destroy()
+
+        buttons = ttk.Frame(win)
+        buttons.pack(anchor="e", padx=10, pady=14, fill="x")
+        ttk.Button(buttons, text="Test read", command=test_read).pack(side="left")
+        ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(buttons, text="OK", command=save).pack(side="right", padx=4)
+        return win
+
     def open_tag_manager(self):
         sel = self.conn_tree.selection()
         if not sel:
@@ -1538,7 +1712,19 @@ class ConnectionsScreen(ttk.Frame):
 
         btn_row = ttk.Frame(win)
         btn_row.pack(fill="x", padx=8, pady=4)
-        ttk.Button(btn_row, text="Add Tag", command=lambda: tag_dialog(None)).pack(side="left", padx=2)
+        def add_tag():
+            if conn.protocol == "s7comm":
+                def saved():
+                    refresh_tags()
+                    self.refresh()
+                    self.app.refresh_dashboard()
+                self._s7_guided_dialog(win, conn, saved)
+            else:
+                tag_dialog(None)
+
+        ttk.Button(btn_row, text="Add Tag", command=add_tag).pack(side="left", padx=2)
+        if conn.protocol == "s7comm":
+            ttk.Button(btn_row, text="Add Tag (fields)", command=lambda: tag_dialog(None)).pack(side="left", padx=2)
 
         def edit_selected():
             sel2 = tree.selection()
