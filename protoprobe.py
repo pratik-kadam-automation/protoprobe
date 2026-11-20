@@ -55,6 +55,7 @@ import s7_address
 import signal_hints
 import candidates
 import output_json
+import tag_import
 import workspace
 import arpscan
 
@@ -1345,6 +1346,7 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(btn_row, text="Manage Tags", command=self.open_tag_manager).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Read a Value", command=self.open_quick_read).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Scan for Live Tags", command=self.open_scan_dialog).pack(side="left", padx=2)
+        ttk.Button(btn_row, text="Import tags from file...", command=self.open_import_dialog).pack(side="left", padx=2)
 
         self.conn_tree = ttk.Treeview(
             self, columns=("protocol", "interface", "tags", "status"), show="headings", height=10
@@ -2031,6 +2033,63 @@ class ConnectionsScreen(ttk.Frame):
         ).pack(anchor="w", padx=8, pady=(0, 6))
 
         tree.bind("<Double-1>", lambda e: edit_selected())
+
+    def open_import_dialog(self, path=None):
+        """Find tag candidates in an Excel/CSV list or a text PDF and add the ticked ones to the selected connection (reads text only)."""
+        sel = self.conn_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a connection", "Click a connection's row above first: the tags are added to it.")
+            return None
+        conn = self.app.connections[sel[0]]
+        if path is None:
+            path = filedialog.askopenfilename(title="Tag list, export or PDF", filetypes=[
+                ("Tag lists", "*.xlsx *.xlsm *.csv *.txt *.tsv *.pdf"), ("All files", "*.*")])
+            if not path:
+                return None
+        res = tag_import.load(path)
+        win = tk.Toplevel(self)
+        win.title(f"Import tags -- {conn.name}")
+        win.geometry("1000x560")
+        ttk.Label(win, wraplength=960, foreground="gray", justify="left",
+                  text="ProtoProbe found LINES with an address in this file. Every row is a guess to confirm on the machine: it reads text only, "
+                       "a PDF cannot be turned back into ladder logic, and a scanned PDF has no text. Rows that do not fit this connection's "
+                       "protocol cannot be added.").pack(anchor="w", padx=12, pady=(10, 4))
+        msg = ttk.Label(win, text=res["error"] or f"{len(res['candidates'])} candidate(s) in {os.path.basename(path)}",
+                        foreground="#c0392b" if res["error"] else "gray")
+        msg.pack(anchor="w", padx=12)
+        cols = ("name", "address", "type", "role", "fits", "comment", "note")
+        tree = ttk.Treeview(win, columns=cols, show="headings", selectmode="extended")
+        for col, label, w in (("name", "Name", 150), ("address", "Address", 100), ("type", "Type", 60), ("role", "Suggested use", 190),
+                              ("fits", "Fits this connection", 110), ("comment", "Comment", 220), ("note", "Note", 180)):
+            tree.heading(col, text=label)
+            tree.column(col, width=w, anchor="w")
+        tree.pack(fill="both", expand=True, padx=12, pady=6)
+        cands = tag_import.sort_best_first(res["candidates"])
+        for i, c in enumerate(cands):
+            ok = tag_import.fits(conn.protocol, c)
+            tree.insert("", "end", iid=str(i), values=(c["name"], c["address"], c["type"], c["why"].split(":")[0] if c["why"] else "",
+                                                       "yes" if ok else "no", c["comment"], c["why_not"] or c["source"]))
+        win.import_tree, win.import_cands, win.import_conn = tree, cands, conn
+
+        def add(output):
+            chosen = [cands[int(i)] for i in tree.selection()]
+            if not chosen:
+                messagebox.showinfo("Select rows", "Select one or more rows first.", parent=win)
+                return
+            added, already, misfit = tag_import.add_to_connection(conn, chosen, output=output)
+            self.refresh()
+            self.app.refresh_dashboard()
+            if "live_values" in self.app.screens:
+                self.app.screens["live_values"].refresh()
+            messagebox.showinfo("Added", f"Added {added} tag(s); {already} already existed; {misfit} did not fit this connection.\n"
+                                         "Check data types before relying on them.", parent=win)
+        win.import_add = add
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=12, pady=(0, 10))
+        ttk.Button(row, text="Add selected", command=lambda: add(False)).pack(side="left")
+        ttk.Button(row, text="Add + include in output JSON", command=lambda: add(True)).pack(side="left", padx=6)
+        ttk.Button(row, text="Close", command=win.destroy).pack(side="right")
+        return win
 
     def open_quick_read(self, parent=None):
         """Read ONE value of the selected connection, the way the gateway's own interface lets you: pick the register type, enter the address,
