@@ -107,6 +107,30 @@ class Screen(unittest.TestCase):
         finally:
             messagebox.showinfo = orig
 
+    def test_output_screen_json_has_the_commissioning_ids_and_the_ticked_names(self):
+        import json
+        com = self.app.screens["commission"]
+        com.answer_vars["gateway_id"].set("GW_ACME_001_000001")
+        com.answer_vars["deployment_id"].set("DP_ACME_001")
+        com.answer_vars["machine_id"].set("MC_ACME_001")
+        self.conn.tags[0]["output"] = "machine status"
+        out = self.app.screens["output"]
+        out.use_commissioning_layout()
+        payload, error = out.build_payload()
+        self.assertIsNone(error)
+        self.assertEqual({k: payload[k] for k in ("deployment_id", "gateway_id", "machine_id")},
+                         {"deployment_id": "DP_ACME_001", "gateway_id": "GW_ACME_001_000001", "machine_id": "MC_ACME_001"})
+        self.assertEqual(payload["data"], {"machine status": 1})
+        self.assertIn("timestamp", payload)
+        shown = json.loads(out.log_detail.get("1.0", "end").split("\n\n(")[0])
+        self.assertEqual(shown["machine_id"], "MC_ACME_001")
+        # the Live values panel falls back to the same answers when its own boxes are empty
+        self.live.render_output()
+        self.assertIn('"machine_id": "MC_ACME_001"', self.live.out_text.get("1.0", "end"))
+        # without ticks the old behaviour stays: every value, tag names as keys
+        del self.conn.tags[0]["output"]
+        self.assertEqual(out.build_payload()[0]["data"], {"tag1": 1, "tag2": 7})
+
 
 if __name__ == "__main__":
     unittest.main()

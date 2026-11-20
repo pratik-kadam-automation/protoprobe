@@ -144,10 +144,15 @@ FIELD_OPTIONS = {
 }
 
 DEFAULT_TEMPLATE = json.dumps({
-    "deviceId": "__DEVICE_ID__",
+    "deployment_id": "__DEPLOYMENT_ID__",
+    "gateway_id": "__GATEWAY_ID__",
+    "machine_id": "__MACHINE_ID__",
     "timestamp": "__TIMESTAMP__",
-    "metrics": "__METRICS__",
+    "data": "__METRICS__",
 }, indent=2)
+
+# The layout ProtoProbe used before the commissioning IDs were added; "Use the commissioning layout" replaces it.
+OLD_TEMPLATE = json.dumps({"deviceId": "__DEVICE_ID__", "timestamp": "__TIMESTAMP__", "metrics": "__METRICS__"}, indent=2)
 
 
 BACNET_TYPE_ABBR = {
@@ -2876,7 +2881,9 @@ class LiveValuesScreen(ttk.Frame):
     def render_output(self):
         if not hasattr(self, "out_text"):
             return
-        payload, warnings = output_json.build_output({k: v.get() for k, v in self.out_ids.items()}, self.app.connections, self.out_mode.get())
+        fallback = self.app.screens["output"].commission_ids() if "output" in self.app.screens else {}
+        ids = {k: (v.get().strip() or fallback.get(k, "")) for k, v in self.out_ids.items()}
+        payload, warnings = output_json.build_output(ids, self.app.connections, self.out_mode.get())
         self.out_text.delete("1.0", "end")
         self.out_text.insert("1.0", output_json.to_text(payload))
         self.out_warn.configure(text="\n".join(warnings))
@@ -3018,8 +3025,9 @@ class OutputScreen(ttk.Frame):
 
         ttk.Label(
             tmpl_frame,
-            text='Edit this JSON freely. Placeholders "__DEVICE_ID__", "__TIMESTAMP__", '
-                 '"__METRICS__" get replaced with live data wherever you put them.',
+            text='Edit this JSON freely. Placeholders "__DEPLOYMENT_ID__", "__GATEWAY_ID__", "__MACHINE_ID__" (from the Commissioning '
+                 'answers), "__DEVICE_ID__", "__TIMESTAMP__" and "__METRICS__" get replaced wherever you put them. If you ticked tags on Live '
+                 'values / Scan results, __METRICS__ holds only those, under the names you gave.',
             wraplength=1000, foreground="gray", justify="left",
         ).pack(anchor="w", padx=4, pady=(4, 0))
 
@@ -3028,7 +3036,10 @@ class OutputScreen(ttk.Frame):
         self.template_text.insert("1.0", DEFAULT_TEMPLATE)
         self.template_text.pack(fill="x", padx=4, pady=4)
 
-        ttk.Button(tmpl_frame, text="Preview JSON Now", command=self.preview_json_now).pack(anchor="w", padx=4, pady=(0, 6))
+        btns = ttk.Frame(tmpl_frame)
+        btns.pack(anchor="w", padx=4, pady=(0, 6))
+        ttk.Button(btns, text="Preview JSON Now", command=self.preview_json_now).pack(side="left")
+        ttk.Button(btns, text="Use the commissioning layout", command=self.use_commissioning_layout).pack(side="left", padx=6)
 
         mqtt_frame = ttk.LabelFrame(root, text="MQTT / Cloud publish (TLS + mTLS + AWS IoT Core compatible)")
         mqtt_frame.pack(fill="x", padx=20, pady=6)
@@ -3105,7 +3116,20 @@ class OutputScreen(ttk.Frame):
         ttk.Button(row, text="Browse...", command=browse).pack(side="left")
         return entry
 
+    def commission_ids(self):
+        """deployment_id / gateway_id / machine_id as answered on the Commissioning screen (read live, nothing to save first)."""
+        screen = self.app.screens.get("commission")
+        answers = screen.collect_answers() if screen else {}
+        return {k: answers.get(k, "") for k in output_json.KEYS}
+
+    def use_commissioning_layout(self):
+        self.template_text.delete("1.0", "end")
+        self.template_text.insert("1.0", DEFAULT_TEMPLATE)
+        self.preview_json_now()
+
     def _current_metrics(self):
+        if output_json.ticked(self.app.connections):       # tags ticked on Live values / Scan results: only those, under their chosen names
+            return output_json.build_output({}, self.app.connections, "values")[0]["data"]
         if self.group_by_conn.get():
             return {name: c.latest_values for name, c in self.app.connections.items() if c.latest_values}
         metrics = {}
@@ -3118,8 +3142,12 @@ class OutputScreen(ttk.Frame):
             template = json.loads(self.template_text.get("1.0", "end"))
         except json.JSONDecodeError as e:
             return None, f"Template is not valid JSON: {e}"
+        ids = self.commission_ids()
         sentinel_values = {
             "__DEVICE_ID__": self.device_id_entry.get().strip() or "AG221-Edge-01",
+            "__DEPLOYMENT_ID__": ids["deployment_id"],
+            "__GATEWAY_ID__": ids["gateway_id"],
+            "__MACHINE_ID__": ids["machine_id"],
             "__TIMESTAMP__": int(time.time()),
             "__METRICS__": self._current_metrics(),
         }
@@ -3132,6 +3160,11 @@ class OutputScreen(ttk.Frame):
             self.log_detail.insert("1.0", error)
             return
         self.log_detail.insert("1.0", json.dumps(payload, indent=2))
+        missing = [k for k, v in self.commission_ids().items() if not v.strip()]
+        if missing and any(f"__{k.upper()}__" in self.template_text.get("1.0", "end") for k in missing):
+            self.log_detail.insert("end", "\n\n(Empty because not answered on the Commissioning screen: " + ", ".join(missing) + ".)")
+        if "__DEPLOYMENT_ID__" not in self.template_text.get("1.0", "end") and "__MACHINE_ID__" not in self.template_text.get("1.0", "end"):
+            self.log_detail.insert("end", "\n\n(This template has no commissioning IDs: press 'Use the commissioning layout'.)")
         if not self._current_metrics():
             self.log_detail.insert("end", "\n\n(No live values yet -- Start All on Connections, wait a couple of cycles.)")
 
