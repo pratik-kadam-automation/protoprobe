@@ -1,0 +1,57 @@
+"""Read-only S7 check, independent of ProtoProbe. Usage:  python s7check.py <PLC-IP> [rack] [slot] [db_number]
+Needs: pip install python-snap7==3.3.1.  Prints what the PLC answers for connect, CPU state, inputs (I), outputs (Q), markers (M) and one DB.
+Writes nothing to the PLC."""
+import sys
+import snap7
+from snap7.type import Area
+
+
+def attempt(label, fn):
+    try:
+        data = fn()
+        text = data if isinstance(data, str) else bytes(data).hex(" ")
+        print(f"  OK     {label}: {text}")
+        return True
+    except Exception as exc:
+        print(f"  FAILED {label}: {exc}")
+        return False
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return 2
+    ip = sys.argv[1]
+    rack = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    slot = int(sys.argv[3]) if len(sys.argv) > 3 else 1
+    db = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+    print(f"snap7 {getattr(snap7, '__version__', '?')}  PLC {ip}  rack {rack} slot {slot}")
+    client = snap7.client.Client()
+    try:
+        client.connect(ip, rack, slot)
+    except Exception as exc:
+        print(f"CONNECT FAILED: {exc}")
+        print("  -> network/IP wrong, firewall on port 102, or rack/slot wrong (S7-1200/1500: rack 0, slot 1; S7-300: slot 2).")
+        return 1
+    print("CONNECTED")
+    attempt("CPU state", lambda: str(client.get_cpu_state()))
+    attempt("CPU info", lambda: str(client.get_cpu_info()))
+    print("Reads (2 bytes each):")
+    ok = [
+        attempt("Inputs  I0  (PE)", lambda: client.read_area(Area.PE, 0, 0, 2)),
+        attempt("Outputs Q0  (PA)", lambda: client.read_area(Area.PA, 0, 0, 2)),
+        attempt("Markers M0  (MK)", lambda: client.read_area(Area.MK, 0, 0, 2)),
+        attempt(f"DB{db} byte 0..1", lambda: client.read_area(Area.DB, db, 0, 2)),
+    ]
+    client.disconnect()
+    print()
+    if not any(ok):
+        print("Connected but EVERY read failed: usually 'Permit access with PUT/GET' is off (CPU properties > Protection & Security > Connection mechanisms), "
+              "or the CPU access level needs 'Full access (no protection)'. Download the change to the CPU.")
+    elif not ok[3]:
+        print("I/Q/M work but the DB does not: wrong DB number, or the DB has 'Optimized block access' on.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
