@@ -73,6 +73,12 @@ class DiscoverDbs(unittest.TestCase):
         self.assertIn("PUT/GET", text)
         self.assertEqual(colour, "red")
 
+    def test_zero_found_summarises_every_failed_db(self):
+        text, colour = protoprobe.discovery_status(*run(5, existing=())[-1])
+        self.assertIn("all 5 probed DBs failed", text)
+        self.assertIn("5 x", text)
+        self.assertEqual(colour, "red")
+
     def test_zero_found_because_the_dbs_do_not_exist_or_are_optimized(self):
         text, _ = protoprobe.discovery_status(*run(2, existing=())[-1])
         self.assertIn("Optimized block access", text.replace("optimized block access", "Optimized block access"))
