@@ -38,3 +38,13 @@ class ScanIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProgressMessages(unittest.TestCase):
+    def test_scan_reports_progress_up_to_one(self):
+        import test_quiet_s7_scan as q
+        msgs, _ = q.scan("I", 0, 40, snapshots=2)
+        fractions = [d for k, d in msgs if k == "progress"]
+        self.assertTrue(fractions)
+        self.assertEqual(fractions, sorted(fractions))
+        self.assertAlmostEqual(fractions[-1], 1.0, places=6)

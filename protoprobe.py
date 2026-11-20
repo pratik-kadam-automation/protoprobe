@@ -342,8 +342,14 @@ def discovery_status(kind, data):
     dbs, errs = data
     if dbs or not errs:
         return f"Done -- {len(dbs)} DB(s) found", "gray"
-    hint = explain_s7_error(errs[0][1])
-    return f"Done -- 0 DB(s) found. DB{errs[0][0]}: {errs[0][1]}" + (f" -- {hint}" if hint else ""), "red"
+    counts = {}
+    for _db, msg in errs:
+        counts[msg] = counts.get(msg, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    reasons = "; ".join(f"{n} x {m}" for m, n in ranked[:2])
+    hint = explain_s7_error(ranked[0][0])
+    return (f"Done -- 0 DB(s) found; all {len(errs)} probed DBs failed ({reasons}; first: DB{errs[0][0]})"
+            + (f" -- {hint}" if hint else "")), "red"
 
 
 def type_label_for_tag(protocol, tag):
@@ -579,6 +585,7 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
                     "status",
                     f"[{job_label}] snapshot {i + 1}/{num_snapshots} -- {done_count}/{len(scan_tags)} read"
                 ))
+                out_queue.put(("progress", (i + done_count / max(1, len(scan_tags))) / max(1, num_snapshots)))
             if stopped_early:
                 break
             if i < num_snapshots - 1:
@@ -2315,6 +2322,8 @@ class ScanResultsScreen(ttk.Frame):
         ttk.Label(header, text="Scan results", font=("Segoe UI", 16)).pack(side="left")
         self.status_label = ttk.Label(header, text="", foreground="gray")
         self.status_label.pack(side="right")
+        self.progress_bar = ttk.Progressbar(header, length=150, maximum=1.0, mode="determinate")
+        self.progress_bar.pack(side="right", padx=(0, 10))
 
         ttk.Label(
             self,
@@ -2391,6 +2400,7 @@ class ScanResultsScreen(ttk.Frame):
     def update_status(self):
         running = " (running)" if self.app.scan_running else ""
         self.status_label.configure(text=f"{self.app.scan_status_text}{running}")
+        self.progress_bar["value"] = self.app.scan_progress if self.app.scan_running else 0.0
 
     def _rebuild_filters(self, distinct_types):
         for child in self.filter_frame.winfo_children():
@@ -2824,6 +2834,7 @@ class App(tk.Tk):
         self.scan_out_queue = queue.Queue()
         self.scan_status_text = "Idle -- no scan running"
         self.scan_running = False
+        self.scan_progress = 0.0            # 0..1 of the job being read (all its snapshots)
         self.scan_stop_event = threading.Event()
 
         self._set_window_icon()
@@ -2854,6 +2865,8 @@ class App(tk.Tk):
                 kind, data = self.scan_out_queue.get_nowait()
                 if kind == "status":
                     self.scan_status_text = data
+                elif kind == "progress":
+                    self.scan_progress = data
                 elif kind == "results":
                     conn_name, job_label, results = data
                     for r in results:
@@ -2874,6 +2887,7 @@ class App(tk.Tk):
                         self.screens["scan_results"].refresh()
                 elif kind == "job_done":
                     self.scan_running = False
+                    self.scan_progress = 0.0
                     self.scan_status_text = "Done"
                 if "scan_results" in self.screens:
                     self.screens["scan_results"].update_status()
