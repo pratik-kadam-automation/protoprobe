@@ -1,0 +1,971 @@
+{
+  "schema": "plc-catalog/1",
+  "types": [
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "Virtual Slave",
+      "label": "Virtual Slave",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [
+        {
+          "flag": "0",
+          "name": "Coils status",
+          "readable": true,
+          "width": "bit"
+        },
+        {
+          "flag": "1",
+          "name": "Discrete inputs",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "3",
+          "name": "Input registers",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "4",
+          "name": "Holding registers",
+          "readable": true,
+          "width": "word"
+        }
+      ],
+      "default_port": 502,
+      "driver": "modbus_tcp",
+      "family": "modbus",
+      "interface_defaults": {},
+      "key": "Modbus_TCP",
+      "label": "Modbus TCP",
+      "link": "ethernet",
+      "notes": [
+        "The gateway counts Modbus references from 1 (preview 00001 for number 1)."
+      ],
+      "pack_protocol": "modbus_tcp",
+      "python_packages": [
+        "pymodbus"
+      ]
+    },
+    {
+      "areas": [
+        {
+          "flag": "0",
+          "name": "Coils status",
+          "readable": true,
+          "width": "bit"
+        },
+        {
+          "flag": "1",
+          "name": "Discrete inputs",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "3",
+          "name": "Input registers",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "4",
+          "name": "Holding registers",
+          "readable": true,
+          "width": "word"
+        }
+      ],
+      "default_port": null,
+      "driver": "modbus_rtu",
+      "family": "modbus",
+      "interface_defaults": {},
+      "key": "Modbus_RTU",
+      "label": "Modbus RTU (serial)",
+      "link": "serial",
+      "notes": [],
+      "pack_protocol": "modbus_rtu",
+      "python_packages": [
+        "pymodbus",
+        "pyserial"
+      ]
+    },
+    {
+      "areas": [
+        {
+          "flag": "0",
+          "name": "Coils status",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "1",
+          "name": "Discrete inputs",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "3",
+          "name": "Input registers",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "4",
+          "name": "Holding registers",
+          "readable": false,
+          "width": "word"
+        }
+      ],
+      "default_port": null,
+      "driver": null,
+      "family": "modbus",
+      "interface_defaults": {},
+      "key": "Modbus_ASC",
+      "label": "Modbus ASCII (serial)",
+      "link": "serial",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [
+        {
+          "flag": "X",
+          "name": "Input relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "Y",
+          "name": "Output relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "M",
+          "name": "Auxiliary relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "S",
+          "name": "Step relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "T",
+          "name": "Timer relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "TV",
+          "name": "Timer value",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "C",
+          "name": "Counter relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "CV",
+          "name": "Counter value",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "D",
+          "name": "Data register",
+          "readable": false,
+          "width": "word"
+        }
+      ],
+      "default_port": null,
+      "driver": null,
+      "family": "delta_dvp",
+      "interface_defaults": {},
+      "key": "DVP_RTU",
+      "label": "Delta DVP (serial)",
+      "link": "serial",
+      "notes": [
+        "The gateway labels CV and D as 'Timer Value': a typing mistake in its dialog."
+      ],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [
+        {
+          "flag": "X",
+          "name": "Input relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "WX",
+          "name": "Input relay",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "DWX",
+          "name": "Input relay",
+          "readable": false,
+          "width": "dword"
+        },
+        {
+          "flag": "Y",
+          "name": "Output relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "WY",
+          "name": "Output relay",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "DWY",
+          "name": "Output relay",
+          "readable": false,
+          "width": "dword"
+        },
+        {
+          "flag": "M",
+          "name": "Internal relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "WM",
+          "name": "Internal relay",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "DWM",
+          "name": "Internal relay",
+          "readable": false,
+          "width": "dword"
+        },
+        {
+          "flag": "S",
+          "name": "Step relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "WS",
+          "name": "Step relay",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "DWS",
+          "name": "Step relay",
+          "readable": false,
+          "width": "dword"
+        },
+        {
+          "flag": "T",
+          "name": "Timer relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "WT",
+          "name": "Timer relay",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "DWT",
+          "name": "Timer relay",
+          "readable": false,
+          "width": "dword"
+        },
+        {
+          "flag": "C",
+          "name": "Counter relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "WC",
+          "name": "Counter relay",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "DWC",
+          "name": "Counter relay",
+          "readable": false,
+          "width": "dword"
+        },
+        {
+          "flag": "RT",
+          "name": "Timer present value",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "DRT",
+          "name": "Timer present value",
+          "readable": false,
+          "width": "dword"
+        },
+        {
+          "flag": "RC",
+          "name": "Counter present value",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "DRC",
+          "name": "Counter present value",
+          "readable": false,
+          "width": "dword"
+        },
+        {
+          "flag": "R",
+          "name": "Data register HR",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "DR",
+          "name": "Data register HR",
+          "readable": false,
+          "width": "dword"
+        },
+        {
+          "flag": "D",
+          "name": "Data register DR",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "DD",
+          "name": "Data register DR",
+          "readable": false,
+          "width": "dword"
+        }
+      ],
+      "default_port": null,
+      "driver": null,
+      "family": "fatek",
+      "interface_defaults": {},
+      "key": "FATEK_COM",
+      "label": "Fatek (serial)",
+      "link": "serial",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [
+        {
+          "flag": "X",
+          "name": "Input relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "Y",
+          "name": "Output relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "M0",
+          "name": "Auxiliary relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "M8000",
+          "name": "Special auxiliary relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "S",
+          "name": "Status relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "T",
+          "name": "Timer flag",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "C",
+          "name": "Counter flag",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "CV0",
+          "name": "Counter value C0-C199",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "CV200",
+          "name": "Counter value C200 and up",
+          "readable": false,
+          "width": "dword"
+        },
+        {
+          "flag": "D0",
+          "name": "Data register",
+          "readable": false,
+          "width": "word"
+        },
+        {
+          "flag": "D8000",
+          "name": "Special data register",
+          "readable": false,
+          "width": "word"
+        }
+      ],
+      "default_port": null,
+      "driver": null,
+      "family": "mitsubishi_fx_serial",
+      "interface_defaults": {},
+      "key": "FX1S_COM",
+      "label": "Mitsubishi FX1S (serial)",
+      "link": "serial",
+      "notes": [
+        "On Mitsubishi FX the X and Y numbers are written in octal (X0-X7, then X10): check the manual before converting."
+      ],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [
+        {
+          "flag": "X",
+          "name": "Input relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "Y",
+          "name": "Output relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "M0",
+          "name": "Auxiliary relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "M8000",
+          "name": "Special auxiliary relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "S",
+          "name": "Status relay",
+          "readable": false,
+          "width": "bit"
+        },
+        {
+          "flag": "T",
+          "name": "Timer flag",
+          "readable": false,
+          "width": "bit"
+        }
+      ],
+      "default_port": null,
+      "driver": null,
+      "family": "mitsubishi_fx_serial",
+      "interface_defaults": {},
+      "key": "FX2N(1N)_COM",
+      "label": "Mitsubishi FX2N/FX1N (serial)",
+      "link": "serial",
+      "notes": [
+        "Only the top of the list was seen; assume the rest matches FX1S_COM until a screenshot says otherwise.",
+        "On Mitsubishi FX the X and Y numbers are written in octal (X0-X7, then X10): check the manual before converting."
+      ],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "FX3U_COM",
+      "label": "FX3U_COM",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "FX5U_COM",
+      "label": "FX5U_COM",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [
+        {
+          "flag": "D",
+          "name": "Data register",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "M",
+          "name": "Internal relay",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "R",
+          "name": "File register",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "W",
+          "name": "Link register",
+          "readable": true,
+          "width": "word"
+        }
+      ],
+      "default_port": 5006,
+      "driver": "mc_protocol_3e",
+      "family": "mitsubishi_mc",
+      "interface_defaults": {},
+      "key": "FX5U_TCP",
+      "label": "Mitsubishi FX5U (Ethernet, SLMP)",
+      "link": "ethernet",
+      "notes": [
+        "ProtoProbe reads D, M, R, W only; the PLC also has X, Y, S, T, C ... (not built).",
+        "On Mitsubishi FX the X and Y numbers are written in octal (X0-X7, then X10): check the manual before converting."
+      ],
+      "pack_protocol": "mc",
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "FX3U_ADP_TCP",
+      "label": "FX3U_ADP_TCP",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [
+        {
+          "flag": "D",
+          "name": "Data register",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "M",
+          "name": "Internal relay",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "R",
+          "name": "File register",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "W",
+          "name": "Link register",
+          "readable": true,
+          "width": "word"
+        }
+      ],
+      "default_port": 5006,
+      "driver": "mc_protocol_3e",
+      "family": "mitsubishi_mc",
+      "interface_defaults": {},
+      "key": "Q_TCP",
+      "label": "Mitsubishi Q series (Ethernet, MC)",
+      "link": "ethernet",
+      "notes": [
+        "ProtoProbe reads D, M, R, W only."
+      ],
+      "pack_protocol": "mc",
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "S7_200 Smart",
+      "label": "S7_200 Smart",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [
+        {
+          "flag": "DB",
+          "name": "Data block",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "I",
+          "name": "Inputs",
+          "readable": true,
+          "width": "bit"
+        },
+        {
+          "flag": "Q",
+          "name": "Outputs",
+          "readable": true,
+          "width": "bit"
+        },
+        {
+          "flag": "M",
+          "name": "Markers",
+          "readable": true,
+          "width": "bit"
+        }
+      ],
+      "default_port": 102,
+      "driver": "s7comm",
+      "family": "s7",
+      "interface_defaults": {
+        "rack": "0",
+        "slot": "1"
+      },
+      "key": "S7_1200",
+      "label": "Siemens S7-1200",
+      "link": "ethernet",
+      "notes": [
+        "Absolute DB reads need 'Permit access with PUT/GET' on, and 'Optimized block access' OFF for that DB."
+      ],
+      "pack_protocol": "s7",
+      "python_packages": [
+        "python-snap7==3.3.1"
+      ]
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "S7_200 PPI",
+      "label": "S7_200 PPI",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [
+        {
+          "flag": "DB",
+          "name": "Data block",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "I",
+          "name": "Inputs",
+          "readable": true,
+          "width": "bit"
+        },
+        {
+          "flag": "Q",
+          "name": "Outputs",
+          "readable": true,
+          "width": "bit"
+        },
+        {
+          "flag": "M",
+          "name": "Markers",
+          "readable": true,
+          "width": "bit"
+        }
+      ],
+      "default_port": 102,
+      "driver": "s7comm",
+      "family": "s7",
+      "interface_defaults": {
+        "rack": "0",
+        "slot": "1"
+      },
+      "key": "S7_1500",
+      "label": "Siemens S7-1500",
+      "link": "ethernet",
+      "notes": [
+        "Absolute DB reads need 'Permit access with PUT/GET' on, and 'Optimized block access' OFF for that DB."
+      ],
+      "pack_protocol": "s7",
+      "python_packages": [
+        "python-snap7==3.3.1"
+      ]
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "FINS_TCP",
+      "label": "FINS_TCP",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "FINS_COM",
+      "label": "FINS_COM",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [
+        {
+          "flag": "DB",
+          "name": "Data block",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "I",
+          "name": "Inputs",
+          "readable": true,
+          "width": "bit"
+        },
+        {
+          "flag": "Q",
+          "name": "Outputs",
+          "readable": true,
+          "width": "bit"
+        },
+        {
+          "flag": "M",
+          "name": "Markers",
+          "readable": true,
+          "width": "bit"
+        }
+      ],
+      "default_port": 102,
+      "driver": "s7comm",
+      "family": "s7",
+      "interface_defaults": {
+        "rack": "0",
+        "slot": "2"
+      },
+      "key": "S7-300",
+      "label": "Siemens S7-300",
+      "link": "ethernet",
+      "notes": [],
+      "pack_protocol": "s7",
+      "python_packages": [
+        "python-snap7==3.3.1"
+      ]
+    },
+    {
+      "areas": [
+        {
+          "flag": "DB",
+          "name": "Data block",
+          "readable": true,
+          "width": "word"
+        },
+        {
+          "flag": "I",
+          "name": "Inputs",
+          "readable": true,
+          "width": "bit"
+        },
+        {
+          "flag": "Q",
+          "name": "Outputs",
+          "readable": true,
+          "width": "bit"
+        },
+        {
+          "flag": "M",
+          "name": "Markers",
+          "readable": true,
+          "width": "bit"
+        }
+      ],
+      "default_port": 102,
+      "driver": "s7comm",
+      "family": "s7",
+      "interface_defaults": {
+        "rack": "0"
+      },
+      "key": "S7-400",
+      "label": "Siemens S7-400",
+      "link": "ethernet",
+      "notes": [
+        "The CPU slot depends on the rack layout: check the hardware configuration."
+      ],
+      "pack_protocol": "s7",
+      "python_packages": [
+        "python-snap7==3.3.1"
+      ]
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "DLT-645-2007",
+      "label": "DLT-645-2007",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "IEC_104",
+      "label": "IEC_104",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": 47808,
+      "driver": "bacnet_ip",
+      "family": "bacnet",
+      "interface_defaults": {},
+      "key": "BACnet IP",
+      "label": "BACnet/IP (building automation)",
+      "link": "ethernet",
+      "notes": [
+        "Addresses are an object type and an instance number (for example analogInput 1), not memory areas. ProtoProbe's BACnet reader needs this PC's own IP and the device's instance number."
+      ],
+      "pack_protocol": "bacnet",
+      "python_packages": [
+        "BAC0"
+      ]
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "IEC61850",
+      "label": "IEC61850",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "h3_5u_tcp",
+      "label": "h3_5u_tcp",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "DNP3",
+      "label": "DNP3",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "EtherNet/IP(Unconnected)",
+      "label": "EtherNet/IP(Unconnected)",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    },
+    {
+      "areas": [],
+      "default_port": null,
+      "driver": null,
+      "family": "listed",
+      "interface_defaults": {},
+      "key": "EtherNet/IP(Compactlogix)",
+      "label": "EtherNet/IP(Compactlogix)",
+      "link": "other",
+      "notes": [],
+      "pack_protocol": null,
+      "python_packages": []
+    }
+  ]
+}

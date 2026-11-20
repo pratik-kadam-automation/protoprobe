@@ -140,3 +140,20 @@ class ScanPresets(unittest.TestCase):
         for protocol in ("s7comm", "mc_protocol_3e", "modbus_tcp", "modbus_rtu"):
             self.assertTrue(pc.scan_presets(pc.default_type(protocol)), protocol)
         self.assertIsNone(pc.default_type("opcua"))
+
+
+class SharedContract(unittest.TestCase):
+    """tests/fixtures/plc-catalog.json is the contract with the private dashboard backend: the same file lives there as test/fixtures/plc-catalog.json.
+    If this test fails, regenerate it (python3 -c "import plc_catalog,json; print(json.dumps(plc_catalog.export_contract(), indent=2, sort_keys=True))")
+    and copy the same file to the backend repo in the same change."""
+    def test_the_exported_catalog_is_the_one_in_the_fixture(self):
+        import json
+        import plc_catalog as pc
+        path = os.path.join(os.path.dirname(__file__), "fixtures", "plc-catalog.json")
+        self.assertEqual(json.load(open(path)), json.loads(json.dumps(pc.export_contract())))
+
+    def test_every_type_with_a_driver_says_what_to_install(self):
+        import plc_catalog as pc
+        for t in pc.export_contract()["types"]:
+            if t["driver"]:
+                self.assertTrue(t["pack_protocol"], t["key"])

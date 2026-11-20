@@ -220,6 +220,33 @@ def describe(key):
     return "\n".join(lines)
 
 
+# What a deployment needs, per ProtoProbe driver id: the protocol name the dashboard's commissioning pack uses, the Python package(s) the reader needs,
+# and the usual port. Part of the shared contract (`plc-catalog/1`): the private backend keeps an identical copy of the exported file.
+_DRIVER_PACKAGES = {
+    "s7comm": {"pack_protocol": "s7", "python_packages": ["python-snap7==3.3.1"], "default_port": 102},
+    "mc_protocol_3e": {"pack_protocol": "mc", "python_packages": [], "default_port": 5006},
+    "modbus_tcp": {"pack_protocol": "modbus_tcp", "python_packages": ["pymodbus"], "default_port": 502},
+    "modbus_rtu": {"pack_protocol": "modbus_rtu", "python_packages": ["pymodbus", "pyserial"], "default_port": None},
+    "bacnet_ip": {"pack_protocol": "bacnet", "python_packages": ["BAC0"], "default_port": 47808},
+}
+
+
+def export_contract():
+    """The catalog as plain data for the other repos: {"schema": "plc-catalog/1", "types": [...]}. Types without a driver are listed with driver null,
+    so a deployment tool can say 'not supported yet' instead of guessing."""
+    types = []
+    for p in CATALOG:
+        extra = _DRIVER_PACKAGES.get(p.driver, {})
+        types.append({
+            "key": p.key, "label": p.label, "family": p.family, "link": p.link, "driver": p.driver,
+            "pack_protocol": extra.get("pack_protocol"), "python_packages": extra.get("python_packages", []),
+            "default_port": extra.get("default_port"), "interface_defaults": dict(p.interface),
+            "areas": [{"flag": a.flag, "name": a.name, "width": a.width, "readable": a.readable} for a in p.areas],
+            "notes": list(p.notes),
+        })
+    return {"schema": "plc-catalog/1", "types": types}
+
+
 def modbus_zero_based(number):
     """ASSUMPTION, to be proven against a simulator: the gateway's number is the 1-based Modbus reference (its preview shows 00001 for 1),
     while ProtoProbe's Modbus tags use the protocol's 0-based address."""
