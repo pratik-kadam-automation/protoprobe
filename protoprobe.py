@@ -53,6 +53,7 @@ from plc_reader import build_range_tags
 import plc_catalog
 import s7_address
 import signal_hints
+import workspace
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
@@ -873,10 +874,12 @@ def connection_health(status, health, tag_count):
 
 
 class Connection:
-    def __init__(self, name, protocol, interface, plc_type=None):
+    def __init__(self, name, protocol, interface, plc_type=None, enabled=True, poll_interval_s=2.0):
         self.name = name
         self.protocol = protocol
         self.interface = interface
+        self.enabled = enabled              # a disabled connection is kept but not polled
+        self.poll_interval_s = poll_interval_s
         self.plc_type = plc_type            # the gateway's PLC-type name (plc_catalog), or None when only a protocol was chosen
         self.tags = []
         self.thread = None
@@ -1367,6 +1370,8 @@ class ConnectionsScreen(ttk.Frame):
             iface_str = ", ".join(f"{k}={v}" for k, v in conn.interface.items())
             plc = getattr(conn, "plc_type", None)
             colour, text = connection_health(conn.status, getattr(conn, "health", None), len(conn.tags))
+            if not getattr(conn, "enabled", True):
+                colour, text = "grey", "Disabled: not read when polling starts"
             self.conn_tree.insert("", "end", iid=name, tags=(colour,), values=(
                 PROTOCOL_LABELS[conn.protocol] + (f"  [{plc}]" if plc else ""), iface_str, len(conn.tags), "\u25cf " + text
             ))
@@ -1387,7 +1392,7 @@ class ConnectionsScreen(ttk.Frame):
     def _connection_dialog(self, existing):
         win = tk.Toplevel(self)
         win.title("Edit Connection" if existing else "Add Connection")
-        win.geometry("480x600")
+        win.geometry("480x660")
         win.grab_set()
 
         ttk.Label(win, text="Connection Name").pack(anchor="w", padx=8, pady=(8, 0))
@@ -1419,6 +1424,14 @@ class ConnectionsScreen(ttk.Frame):
 
         hint_label = ttk.Label(win, text="", foreground="gray", wraplength=440, justify="left")
         hint_label.pack(anchor="w", padx=8, pady=(0, 4))
+
+        extra = ttk.Frame(win)
+        extra.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Label(extra, text="Poll every (s)").pack(side="left")
+        poll_var = tk.StringVar(value=str(existing.poll_interval_s if existing else 2.0))
+        ttk.Entry(extra, textvariable=poll_var, width=7).pack(side="left", padx=6)
+        enabled_var = tk.BooleanVar(value=existing.enabled if existing else True)
+        ttk.Checkbutton(extra, text="Enabled (read it when polling starts)", variable=enabled_var).pack(side="left", padx=12)
 
         def render_fields(*_):
             for child in fields_frame.winfo_children():
@@ -1483,16 +1496,25 @@ class ConnectionsScreen(ttk.Frame):
                 return
             protocol_key = label_to_key[protocol_cb.get()]
             interface = {k: coerce(e.get().strip()) for k, e in field_entries.items()}
+            try:
+                poll = float(poll_var.get())
+                if not workspace.POLL_MIN_S <= poll <= workspace.POLL_MAX_S:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Invalid", f"Poll interval must be a number of seconds between {workspace.POLL_MIN_S} and {workspace.POLL_MAX_S:g}")
+                return
 
             if existing:
                 existing.protocol = protocol_key
                 existing.interface = interface
                 existing.plc_type = chosen_type
+                existing.poll_interval_s = poll
+                existing.enabled = enabled_var.get()
             else:
                 if name in self.app.connections:
                     messagebox.showerror("Duplicate", f"Connection '{name}' already exists")
                     return
-                self.app.connections[name] = Connection(name, protocol_key, interface, chosen_type)
+                self.app.connections[name] = Connection(name, protocol_key, interface, chosen_type, enabled_var.get(), poll)
 
             self.refresh()
             self.app.refresh_dashboard()
@@ -2614,12 +2636,9 @@ class ConnectionsScreen(ttk.Frame):
             return
         any_started = False
         for conn in self.app.connections.values():
-            if not conn.tags:
+            if not conn.tags or not getattr(conn, "enabled", True):
                 continue
-            merge_interval = float(self.app.output_screen.merge_interval_entry.get().strip() or 5) \
-                if self.app.output_screen else 5.0
-            poll_interval = min(merge_interval, 2.0)
-            thread = PollerThread(conn, poll_interval, self.app.out_queue)
+            thread = PollerThread(conn, getattr(conn, "poll_interval_s", 2.0), self.app.out_queue)
             conn.thread = thread
             thread.start()
             any_started = True
@@ -3704,7 +3723,10 @@ class App(tk.Tk):
     def _build_menu(self):
         menubar = tk.Menu(self)
         file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Exit", command=self.destroy)
+        file_menu.add_command(label="Open workspace...", command=self.open_workspace_file)
+        file_menu.add_command(label="Save workspace as...", command=self.save_workspace_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
         menubar.add_cascade(label="File", menu=file_menu)
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About ProtoProbe", command=self.show_about)
@@ -3808,6 +3830,99 @@ class App(tk.Tk):
         for c in self.connections.values():
             metrics.update(c.latest_values)
         return metrics
+
+    # ---- the workspace: connections and tags remembered between sessions (opt-in from main(), so tests never touch a real profile) ----
+    workspace_file = None
+    _workspace_blocked = False
+    _workspace_last = None
+
+    def _workspace_dict(self):
+        return workspace.snapshot(self.connections.values(), APP_VERSION)
+
+    @staticmethod
+    def _workspace_key(data):
+        return json.dumps({k: v for k, v in data.items() if k != "saved_at"}, sort_keys=True)
+
+    def _apply_workspace(self, data):
+        """Replace the connections with those of a loaded workspace; returns the warnings (what was left out and why)."""
+        found, warnings = workspace.restore(data, set(PROTOCOL_LABELS))
+        for old in self.connections.values():
+            if old.thread:
+                old.thread.stop()
+        self.connections.clear()
+        for c in found:
+            conn = Connection(c["name"], c["protocol"], c["interface"], c["plc_type"], c["enabled"], c["poll_interval_s"])
+            conn.tags = c["tags"]
+            self.connections[conn.name] = conn
+        self.screens["connections"].refresh()
+        self.refresh_dashboard()
+        return warnings
+
+    def enable_workspace(self, path=None):
+        """Remember connections and tags between sessions: load the saved file now, save changes every few seconds and when the window closes."""
+        self.workspace_file = path or workspace.default_path()
+        data, message = workspace.load(self.workspace_file)
+        notes = [message] if message else []
+        if data:
+            try:
+                notes += self._apply_workspace(data)
+            except ValueError as exc:
+                self._workspace_blocked = True          # never overwrite a file this version does not understand
+                notes.append(f"{exc}\n\nNothing will be saved over it in this session.")
+        self._workspace_last = self._workspace_key(self._workspace_dict())
+        if notes:
+            messagebox.showwarning("Workspace", "\n\n".join(notes))
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(5000, self._autosave_tick)
+
+    def _save_workspace_now(self):
+        if not self.workspace_file or self._workspace_blocked:
+            return False
+        data = self._workspace_dict()
+        key = self._workspace_key(data)
+        if key == self._workspace_last:
+            return False
+        try:
+            workspace.save_atomic(self.workspace_file, data)
+        except OSError as exc:
+            if not getattr(self, "_workspace_error_shown", False):
+                self._workspace_error_shown = True
+                messagebox.showwarning("Workspace not saved", f"Could not save {self.workspace_file}:\n{exc}")
+            return False
+        self._workspace_last = key
+        return True
+
+    def _autosave_tick(self):
+        self._save_workspace_now()
+        self.after(5000, self._autosave_tick)
+
+    def _on_close(self):
+        self._save_workspace_now()
+        self.destroy()
+
+    def open_workspace_file(self):
+        path = filedialog.askopenfilename(filetypes=[("ProtoProbe workspace", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        data, message = workspace.load(path)
+        if data is None:
+            messagebox.showerror("Open workspace", message or "That file could not be read.")
+            return
+        if self.connections and not messagebox.askyesno("Open workspace", "Replace the current connections and tags with this file?"):
+            return
+        try:
+            warnings = self._apply_workspace(data)
+        except ValueError as exc:
+            messagebox.showerror("Open workspace", str(exc))
+            return
+        if warnings:
+            messagebox.showwarning("Open workspace", "\n".join(warnings))
+
+    def save_workspace_as(self):
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("ProtoProbe workspace", "*.json")], initialfile="workspace.json")
+        if path:
+            workspace.save_atomic(path, self._workspace_dict())
+            messagebox.showinfo("Saved", f"Workspace saved to:\n{path}")
 
     def restart_poller(self, conn):
         """A running poller copied the tag list when it started: after a tag changed, start a new poller for that connection so the change is read."""
@@ -3954,4 +4069,5 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     app = App()
+    app.enable_workspace()
     app.mainloop()

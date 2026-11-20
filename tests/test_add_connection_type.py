@@ -53,9 +53,9 @@ class AddConnectionType(unittest.TestCase):
     def test_siemens_types_set_protocol_and_slot(self):
         self.pick("S7_1200")
         self.assertEqual(self.proto_cb.get(), pp.PROTOCOL_LABELS["s7comm"])
-        self.assertEqual(self.fields()[-2:], ["0", "1"])
+        self.assertEqual(self.fields()[-3:-1], ["0", "1"])          # rack, slot (the last box is the poll interval)
         self.pick("S7-300")
-        self.assertEqual(self.fields()[-2:], ["0", "2"])
+        self.assertEqual(self.fields()[-3:-1], ["0", "2"])
 
     def test_type_without_driver_is_not_saved(self):
         self.pick("FINS_TCP")
