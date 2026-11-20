@@ -79,6 +79,34 @@ class Screen(unittest.TestCase):
         self.live.remove_selected()
         self.assertNotIn("output", self.conn.tags[0])
 
+    def _scan_row(self, name, tag):
+        return {"conn_name": "plc", "job_label": "j", "name": name, "type_label": "word", "changed": True, "raw_value": 1, "latest": 1,
+                "tag": tag, "changed_count": 2, "snapshots": 3}
+
+    def test_scan_results_add_and_include(self):
+        from tkinter import messagebox
+        orig = messagebox.showinfo
+        messagebox.showinfo = lambda *a, **k: None
+        try:
+            scan = self.app.screens["scan_results"]
+            self.app.scan_results[:] = [self._scan_row("D100", {"name": "D100", "address": 100, "data_type": "int16"})]
+            scan.refresh()
+            scan.tree.selection_set(scan.tree.get_children()[0])
+            scan.add_selected(output=True, output_name="production count")
+            tag = next(t for t in self.conn.tags if t["name"] == "D100")
+            self.assertEqual(tag["output"], "production count")
+            # the same row again: the existing tag is kept and only gets the (new) name
+            scan.tree.selection_set(scan.tree.get_children()[0])
+            scan.add_selected(output=True, output_name="parts")
+            self.assertEqual([t["name"] for t in self.conn.tags].count("D100"), 1)
+            self.assertEqual(tag["output"], "parts")
+            # plain Add leaves the output name alone
+            scan.tree.selection_set(scan.tree.get_children()[0])
+            scan.add_selected()
+            self.assertEqual(tag["output"], "parts")
+        finally:
+            messagebox.showinfo = orig
+
 
 if __name__ == "__main__":
     unittest.main()

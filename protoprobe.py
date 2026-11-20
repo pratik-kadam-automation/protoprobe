@@ -3206,6 +3206,7 @@ class ScanResultsScreen(ttk.Frame):
         btn_row = ttk.Frame(self)
         btn_row.pack(fill="x", padx=20, pady=4)
         ttk.Button(btn_row, text="Add selected to tag list", command=self.add_selected).pack(side="left", padx=2)
+        ttk.Button(btn_row, text="Add + include in output JSON", command=lambda: self.add_selected(output=True)).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Export suggestions...", command=self.export_suggestions).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Clear all results", command=self.clear_results).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Stop running scan", command=self.stop_scan).pack(side="left", padx=2)
@@ -3391,7 +3392,8 @@ class ScanResultsScreen(ttk.Frame):
         messagebox.showinfo("Exported", f"{len(rows)} suggestion(s) written to:\n{path}\n\nThey are guesses from the scan: confirm each on the machine.")
         return path
 
-    def add_selected(self):
+    def add_selected(self, output=False, output_name=None):
+        """Add the selected rows as tags. output=True also ticks them for the output JSON (Live values): one tag asks for the name."""
         sel = self.tree.selection()
         if not sel:
             messagebox.showinfo("Select rows", "Select one or more results to add first")
@@ -3404,6 +3406,7 @@ class ScanResultsScreen(ttk.Frame):
             by_iid[iid] = r
 
         added, skipped, missing_conn = 0, 0, 0
+        touched = []                                   # tags added now or already there: they get the output name
         for iid in sel:
             r = by_iid.get(iid)
             if not r:
@@ -3424,18 +3427,34 @@ class ScanResultsScreen(ttk.Frame):
                 if not new_tags:
                     skipped += 1
                 for tag in new_tags:
-                    if any(t["name"] == tag["name"] for t in conn.tags):
+                    old = next((t for t in conn.tags if t["name"] == tag["name"]), None)
+                    if old is not None:
                         skipped += 1
+                        touched.append(old)
                     else:
                         conn.tags.append(tag)
                         added += 1
+                        touched.append(tag)
                 continue
             tag = dict(r["tag"])
-            if any(t["name"] == tag["name"] for t in conn.tags):
+            old = next((t for t in conn.tags if t["name"] == tag["name"]), None)
+            if old is not None:
                 skipped += 1
+                touched.append(old)
                 continue
             conn.tags.append(tag)
             added += 1
+            touched.append(tag)
+
+        if output and touched:
+            if len(touched) == 1 and output_name is None:
+                output_name = simpledialog.askstring("Name in the output JSON", "Name to show in \"data\" (for example: machine status):",
+                                                     initialvalue=touched[0].get("output") or touched[0]["name"], parent=self)
+            for tag in touched:
+                name = (output_name or "").strip() if len(touched) == 1 else ""
+                tag["output"] = name or tag.get("output") or tag["name"]
+            if "live_values" in self.app.screens:
+                self.app.screens["live_values"].refresh()
 
         self.app.refresh_dashboard()
         if "connections" in self.app.screens:
