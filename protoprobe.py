@@ -2659,6 +2659,64 @@ class LiveValuesScreen(ttk.Frame):
         for colour, hex_colour in HEALTH_COLOURS.items():
             self.live_tree.tag_configure(colour, foreground=hex_colour)
         self.live_tree.pack(fill="both", expand=True, padx=20, pady=8)
+        self.live_tree.bind("<Double-1>", lambda e: self.edit_selected_tag())
+        ttk.Label(self, text="Double-click a row to change that tag's data type, scale, offset or unit (reading only: nothing is written to the PLC).",
+                  foreground="gray").pack(anchor="w", padx=20, pady=(0, 8))
+
+    def edit_selected_tag(self):
+        selected = self.live_tree.selection()
+        if not selected or "::" not in selected[0]:
+            return None
+        conn_name, tag_name = selected[0].split("::", 1)
+        conn = self.app.connections.get(conn_name)
+        tag = next((t for t in conn.tags if t["name"] == tag_name), None) if conn else None
+        return self.edit_tag_dialog(conn, tag) if tag else None
+
+    def edit_tag_dialog(self, conn, tag):
+        """Change how a tag is READ (data type, scale, offset, unit) while it is being polled. Nothing is ever written to the PLC."""
+        win = tk.Toplevel(self)
+        win.title(f"Edit tag -- {tag['name']}")
+        win.geometry("420x300")
+        ttk.Label(win, text=f"{conn.name}:  {tag['name']}   ({format_address(conn.protocol, tag)})", font=("Segoe UI", 10, "bold")).pack(
+            anchor="w", padx=10, pady=(10, 8))
+        options = ["bit"] if tag.get("data_type") == "bit" else [o for o in FIELD_OPTIONS["data_type"]["options"] if o != "bit"]
+        vars_ = {"data_type": tk.StringVar(value=str(tag.get("data_type", options[0]))),
+                 "multiplier": tk.StringVar(value=str(tag.get("multiplier", 1.0))),
+                 "offset": tk.StringVar(value=str(tag.get("offset", 0.0))),
+                 "unit": tk.StringVar(value=str(tag.get("unit", "")))}
+        for row, (key, label) in enumerate((("data_type", "Data type"), ("multiplier", "Scale (x)"), ("offset", "Offset (+)"), ("unit", "Unit"))):
+            frame = ttk.Frame(win)
+            frame.pack(fill="x", padx=10, pady=3)
+            ttk.Label(frame, text=label, width=12).pack(side="left")
+            if key == "data_type":
+                ttk.Combobox(frame, textvariable=vars_[key], values=options, state="readonly", width=18).pack(side="left")
+            else:
+                ttk.Entry(frame, textvariable=vars_[key], width=20).pack(side="left")
+        ttk.Label(win, text="The value shown is: raw value x scale + offset. A 32-bit type reads 4 bytes from the same address.",
+                  foreground="gray", wraplength=390, justify="left").pack(anchor="w", padx=10, pady=(8, 0))
+
+        def save():
+            try:
+                tag["multiplier"] = float(vars_["multiplier"].get() or 1)
+                tag["offset"] = float(vars_["offset"].get() or 0)
+            except ValueError:
+                messagebox.showerror("Not a number", "Scale and offset must be numbers")
+                return
+            tag["data_type"] = vars_["data_type"].get()
+            if vars_["unit"].get().strip():
+                tag["unit"] = vars_["unit"].get().strip()
+            else:
+                tag.pop("unit", None)
+            conn.latest_values.pop(tag["name"], None)
+            self.app.restart_poller(conn)
+            self.refresh()
+            win.destroy()
+
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=10, pady=14)
+        ttk.Button(row, text="Save", command=save).pack(side="right", padx=4)
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right", padx=4)
+        return win
 
     def refresh(self):
         for child in self.health_frame.winfo_children():
@@ -3680,6 +3738,17 @@ class App(tk.Tk):
         for c in self.connections.values():
             metrics.update(c.latest_values)
         return metrics
+
+    def restart_poller(self, conn):
+        """A running poller copied the tag list when it started: after a tag changed, start a new poller for that connection so the change is read."""
+        old = conn.thread
+        if old is None or not old.is_alive():
+            return False
+        old.stop()
+        thread = PollerThread(conn, old.interval_s, self.out_queue)
+        conn.thread = thread
+        thread.start()
+        return True
 
     def _poll_queue(self):
         try:

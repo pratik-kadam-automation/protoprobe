@@ -253,3 +253,42 @@ class WatchList(QuickRead):
         tree.selection_set(tree.get_children()[0])
         self.btn("Remove selected").invoke()
         self.assertEqual(tree.get_children(), ())
+
+
+class EditTagOnLiveValues(QuickRead):
+    def test_changing_the_type_updates_the_tag_and_restarts_the_reader(self):
+        tag = {"name": "Speed", "area": "M", "db_number": 0, "start_byte": 60, "data_type": "int16"}
+        self.conn.tags = [tag]
+        live = self.app.screens["live_values"]
+        restarted = []
+        self.app.restart_poller = lambda conn: restarted.append(conn.name) or True
+        win = live.edit_tag_dialog(self.conn, tag)
+        self.app.update()
+        combo = next(w for w in walk(win) if w.winfo_class() == "TCombobox")
+        combo.set("int32")
+        entries = [w for w in walk(win) if w.winfo_class() == "TEntry"]       # scale, offset, unit
+        entries[0].delete(0, "end")
+        entries[0].insert(0, "0.1")
+        entries[2].insert(0, "rpm")
+        self.conn.latest_values["Speed"] = 5
+        next(w for w in walk(win) if w.winfo_class() == "TButton" and w.cget("text") == "Save").invoke()
+        self.assertEqual((tag["data_type"], tag["multiplier"], tag["unit"]), ("int32", 0.1, "rpm"))
+        self.assertNotIn("Speed", self.conn.latest_values)
+        self.assertEqual(restarted, ["c"])
+
+    def test_a_bit_tag_can_only_stay_a_bit(self):
+        tag = {"name": "Lamp", "area": "Q", "db_number": 0, "start_byte": 0, "bit_offset": 5, "data_type": "bit"}
+        win = self.app.screens["live_values"].edit_tag_dialog(self.conn, tag)
+        combo = next(w for w in walk(win) if w.winfo_class() == "TCombobox")
+        self.assertEqual(list(combo["values"]), ["bit"])
+
+    def test_the_restart_really_replaces_a_running_poller(self):
+        self.conn.tags = [{"name": "A", "area": "M", "start_byte": 0, "data_type": "int16"}]
+        old = pp.PollerThread(self.conn, 0.05, self.app.out_queue)
+        self.conn.thread = old
+        old.start()
+        self.assertTrue(self.app.restart_poller(self.conn))
+        self.assertIsNot(self.conn.thread, old)
+        self.conn.thread.stop()
+        old.join(timeout=3)
+        self.assertFalse(old.is_alive())
