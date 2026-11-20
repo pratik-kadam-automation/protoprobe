@@ -191,3 +191,65 @@ class QuickRead(unittest.TestCase):
         tops = [w for w in walk(self.app) if isinstance(w, tk.Toplevel)]
         self.assertEqual(len(tops), 2)
         self.assertTrue(any(str(w.title()).startswith("Read a value") for w in tops))
+
+
+class ReadTagsOnce(unittest.TestCase):
+    conn = pp.Connection("c", "s7comm", {"ip": "192.0.2.1", "rack": 0, "slot": 1})
+
+    def test_several_tags_one_connection_each_with_its_own_answer(self):
+        tags = [{"name": "Good", "area": "M", "start_byte": 0, "data_type": "int16"},
+                {"name": "Bad", "area": "DB", "db_number": 1, "start_byte": 0, "data_type": "int16"}]
+        out = pp.read_tags_once(self.conn, tags, {"s7comm": FakeS7})
+        self.assertEqual(out["Good"], (12.5, None))
+        self.assertIsNone(out["Bad"][0])
+        self.assertIn("Object does not exist", out["Bad"][1])
+
+    def test_no_connection_is_the_reason_for_every_tag(self):
+        class Refuses(FakeS7):
+            async def connect(self):
+                raise ConnectionError("no route")
+        out = pp.read_tags_once(self.conn, [{"name": "a", "area": "M", "start_byte": 0, "data_type": "int16"},
+                                            {"name": "b", "area": "M", "start_byte": 2, "data_type": "int16"}], {"s7comm": Refuses})
+        self.assertEqual(out, {"a": (None, "no route"), "b": (None, "no route")})
+
+
+class WatchList(QuickRead):
+    def open(self):
+        win = self.scr.open_quick_read()
+        self.app.update()
+        self.win = win
+        return win
+
+    def btn(self, text):
+        return next(w for w in walk(self.win) if w.winfo_class() in ("TButton", "TRadiobutton", "TCheckbutton") and w.cget("text") == text)
+
+    def tree(self):
+        return next(w for w in walk(self.win) if w.winfo_class() == "Treeview")
+
+    def test_add_several_and_read_them_together(self):
+        pp.messagebox.showinfo = lambda *a, **k: None
+        self.open()
+        ents = [w for w in walk(self.win) if w.winfo_class() == "TEntry"]
+        for name, offset in (("A", "0"), ("B", "2")):
+            ents[0].delete(0, "end")
+            ents[0].insert(0, name)
+            ents[2].delete(0, "end")
+            ents[2].insert(0, offset)
+            self.btn("MW").invoke()
+            self.btn("Add to list").invoke()
+        self.assertEqual(len(self.tree().get_children()), 2)
+        self.btn("Read list now").invoke()
+        self.pump(1.0)
+        values = [self.tree().item(i)["values"][2] for i in self.tree().get_children()]
+        self.assertEqual([str(v) for v in values], ["12.5", "12.5"])
+        self.assertEqual(self.conn.tags, [])               # nothing became a tag yet
+        self.btn("Add all as tags").invoke()
+        self.assertEqual([t["name"] for t in self.conn.tags], ["A", "B"])
+
+    def test_remove_from_the_list(self):
+        self.open()
+        self.btn("Add to list").invoke()
+        tree = self.tree()
+        tree.selection_set(tree.get_children()[0])
+        self.btn("Remove selected").invoke()
+        self.assertEqual(tree.get_children(), ())

@@ -101,6 +101,12 @@ _DETAILED = (
             notes=("ProtoProbe reads D, M, R, W only.",)),
 )
 
+_DETAILED = _DETAILED + (
+    PlcType("BACnet IP", "BACnet/IP (building automation)", "bacnet", "ethernet", "bacnet_ip",
+            notes=("Addresses are an object type and an instance number (for example analogInput 1), not memory areas. "
+                   "ProtoProbe's BACnet reader needs this PC's own IP and the device's instance number.",)),
+)
+
 _BY_KEY = {p.key: p for p in _DETAILED}
 CATALOG = tuple(_BY_KEY.get(k) or PlcType(k, k, "listed", "other") for k in GATEWAY_PROTOCOLS)    # every gateway protocol, detailed or not
 _CAT_BY_KEY = {p.key: p for p in CATALOG}
@@ -155,6 +161,8 @@ def scan_presets(key):
     p = _CAT_BY_KEY.get(key)
     if p is None or not p.driver:
         return []
+    if p.driver not in ("s7comm", "mc_protocol_3e", "modbus_tcp", "modbus_rtu"):
+        return []                                        # BACnet and the like name objects, not address ranges: nothing to scan
     if p.driver == "s7comm":
         return [
             ScanPreset("Inputs I, bytes 0-63", {"area": "I", "start": 0, "end": 63},
@@ -195,8 +203,8 @@ def describe(key):
     p = get(key)
     lines = []
     if p.driver:
-        readable = ", ".join(f"{a.flag} ({a.name})" for a in p.areas if a.readable) or "none listed"
-        lines.append(f"ProtoProbe can connect to this type. It reads: {readable}.")
+        readable = ", ".join(f"{a.flag} ({a.name})" for a in p.areas if a.readable)
+        lines.append(f"ProtoProbe can connect to this type. It reads: {readable}." if readable else "ProtoProbe can connect to this type.")
         not_read = [a for a in p.areas if not a.readable]
         if not_read:
             lines.append("The PLC also has (not readable by ProtoProbe yet): " + ", ".join(a.flag for a in not_read) + ".")

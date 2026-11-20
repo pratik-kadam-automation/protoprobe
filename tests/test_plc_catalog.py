@@ -57,7 +57,7 @@ class Catalog(unittest.TestCase):
 
     def test_connectable_today(self):
         self.assertEqual([p.key for p in pc.connectable()],
-                         ["Modbus_TCP", "Modbus_RTU", "FX5U_TCP", "Q_TCP", "S7_1200", "S7_1500", "S7-300", "S7-400"])
+                         ["Modbus_TCP", "Modbus_RTU", "FX5U_TCP", "Q_TCP", "S7_1200", "S7_1500", "S7-300", "S7-400", "BACnet IP"])
 
     def test_modbus_lists_match_the_gateway_dialog_and_discrete_inputs_are_not_readable_yet(self):
         flags = {a.flag: a for a in pc.get("Modbus_TCP").areas}
@@ -123,7 +123,8 @@ class ScanPresets(unittest.TestCase):
     def test_every_connectable_type_has_presets_and_the_others_none(self):
         import plc_catalog as pc
         for p in pc.CATALOG:
-            self.assertEqual(bool(pc.scan_presets(p.key)), bool(p.driver), p.key)
+            scannable = p.driver in ("s7comm", "mc_protocol_3e", "modbus_tcp", "modbus_rtu")      # BACnet names objects: nothing to scan
+            self.assertEqual(bool(pc.scan_presets(p.key)), scannable, p.key)
 
     def test_s7_presets_use_the_scan_windows_field_names(self):
         import plc_catalog as pc

@@ -15,7 +15,7 @@ S7_1200, S7_200 PPI, S7_1500, FINS_TCP, FINS_COM, S7-300, S7-400, DLT-645-2007, 
 EtherNet/IP (Compactlogix).
 
 ## In code
-`plc_catalog.py` holds these lists as data (`CATALOG`: all 29 gateway PLC types; `connectable()`: the 8 ProtoProbe can connect to today; `readable_areas()`; `address_preview()`).
+`plc_catalog.py` holds these lists as data (`CATALOG`: all 29 gateway PLC types; `connectable()`: the 9 ProtoProbe can connect to today; `readable_areas()`; `address_preview()`).
 `tests/test_plc_catalog.py` checks it, including that nothing is called readable unless the driver really reads it. No screen uses it yet.
 
 ## Seen so far

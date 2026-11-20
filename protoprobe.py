@@ -269,18 +269,21 @@ def explain_s7_error(message):
     return None
 
 
-def read_tag_once(conn, tag, driver_factory=None):
-    """Read ONE tag once, with the connection's own settings: (value, None) or (None, "what went wrong"). For the Test read button. The drivers
-    log a failed tag instead of raising, so their warning text is collected and returned as the reason."""
+def read_tags_once(conn, tags, driver_factory=None):
+    """Read several tags once over ONE connection: {name: (value, None)} or {name: (None, "what went wrong")}. The drivers log a failed tag
+    instead of raising, so their warning text is collected and returned as the reason; a failure to connect is the reason for every tag."""
     collector = PollLogCollector()
     loggers = [logging.getLogger(n) for n in DRIVER_LOGGERS]
     for lg in loggers:
         lg.addHandler(collector)
-    entry = {"multiplier": 1.0, "offset": 0.0, "mqtt_key": tag["name"]}
-    entry.update(tag)
-    cfg = {"interface": conn.interface, "tags": [entry]}
+    entries = []
+    for tag in tags:
+        entry = {"multiplier": 1.0, "offset": 0.0, "mqtt_key": tag["name"]}
+        entry.update(tag)
+        entries.append(entry)
+    cfg = {"interface": conn.interface, "tags": entries}
     if conn.protocol in ("modbus_tcp", "modbus_rtu"):
-        cfg = {"interface": conn.interface, "devices": [{"unit_id": conn.interface.get("unit_id", 1), "tags": [entry]}]}
+        cfg = {"interface": conn.interface, "devices": [{"unit_id": conn.interface.get("unit_id", 1), "tags": entries}]}
     factory = driver_factory or DRIVER_FACTORY
 
     async def run():
@@ -297,13 +300,18 @@ def read_tag_once(conn, tag, driver_factory=None):
     try:
         values = asyncio.run(run())
     except Exception as exc:
-        return None, str(exc) or exc.__class__.__name__
+        reason = str(exc) or exc.__class__.__name__
+        return {t["name"]: (None, reason) for t in tags}
     finally:
         for lg in loggers:
             lg.removeHandler(collector)
-    if tag["name"] in values:
-        return values[tag["name"]], None
-    return None, collector.errors.get(tag["name"]) or next(iter(collector.errors.values()), "no value came back")
+    fallback = next(iter(collector.errors.values()), "no value came back")
+    return {t["name"]: ((values[t["name"]], None) if t["name"] in values else (None, collector.errors.get(t["name"]) or fallback)) for t in tags}
+
+
+def read_tag_once(conn, tag, driver_factory=None):
+    """Read ONE tag once: (value, None) or (None, "what went wrong"). For the Test read and Read now buttons."""
+    return read_tags_once(conn, [tag], driver_factory)[tag["name"]]
 
 
 def discover_db_numbers_sync(conn, max_db, out_queue=None, errors=None):
@@ -1482,16 +1490,23 @@ class ConnectionsScreen(ttk.Frame):
         choose the data type, press Test read to see the value right away."""
         win = tk.Toplevel(parent)
         win.title(f"Read a value -- {conn.name}" if quick else "Add Siemens tag")
-        win.geometry("640x700" if quick else "640x640")
+        win.geometry("1140x700" if quick else "640x640")
         if not quick:
             win.grab_set()
+        box = ttk.Frame(win)                         # the form; in quick mode the watch list sits to its right
+        if quick:
+            box.pack(side="left", fill="y")
+            side = ttk.Frame(win)
+            side.pack(side="left", fill="both", expand=True, padx=(0, 10), pady=10)
+        else:
+            box.pack(fill="both", expand=True)
 
-        ttk.Label(win, text="Tag name (used if you add it as a tag)" if quick else "Tag name").pack(anchor="w", padx=10, pady=(10, 0))
+        ttk.Label(box, text="Tag name (used if you add it as a tag)" if quick else "Tag name").pack(anchor="w", padx=10, pady=(10, 0))
         name_var = tk.StringVar(value=f"Tag{len(conn.tags) + 1}")
-        ttk.Entry(win, textvariable=name_var, width=40).pack(anchor="w", padx=10)
+        ttk.Entry(box, textvariable=name_var, width=40).pack(anchor="w", padx=10)
 
-        ttk.Label(win, text="1. Choose the register type", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
-        grid = ttk.Frame(win)
+        ttk.Label(box, text="1. Choose the register type", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
+        grid = ttk.Frame(box)
         grid.pack(anchor="w", padx=10)
         choice = tk.StringVar(value="M|bit")
         titles = {"bit": "Bit (1 bit)", "byte": "Byte (8 bit)", "word": "Word (16 bit)", "dword": "DWord (32 bit)"}
@@ -1505,11 +1520,11 @@ class ConnectionsScreen(ttk.Frame):
             for c, width in enumerate(s7_address.WIDTHS, start=1):
                 ttk.Radiobutton(grid, text=labels[area][c - 1], style="Toolbutton", width=9, variable=choice, value=f"{area}|{width}",
                                 state="normal" if s7_address.readable(width) else "disabled").grid(row=r, column=c, padx=3, pady=2)
-        ttk.Label(win, text="Byte values (IB, MB, DBB) are greyed out: ProtoProbe cannot read single bytes yet.", foreground="gray").pack(
+        ttk.Label(box, text="Byte values (IB, MB, DBB) are greyed out: ProtoProbe cannot read single bytes yet.", foreground="gray").pack(
             anchor="w", padx=10)
 
-        ttk.Label(win, text="2. Enter the address", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
-        addr = ttk.Frame(win)
+        ttk.Label(box, text="2. Enter the address", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
+        addr = ttk.Frame(box)
         addr.pack(anchor="w", padx=10)
         db_var, byte_var, bit_var = tk.StringVar(value="1"), tk.StringVar(value="0"), tk.StringVar(value="0")
         ttk.Label(addr, text="DB number").grid(row=0, column=0, padx=4)
@@ -1521,11 +1536,11 @@ class ConnectionsScreen(ttk.Frame):
         bit_entry = ttk.Entry(addr, textvariable=bit_var, width=8)
         bit_entry.grid(row=1, column=2, padx=4)
 
-        preview = ttk.Label(win, text="", font=("Consolas", 12, "bold"))
+        preview = ttk.Label(box, text="", font=("Consolas", 12, "bold"))
         preview.pack(anchor="w", padx=10, pady=(10, 0))
 
-        ttk.Label(win, text="3. Data type and scaling", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
-        dt = ttk.Frame(win)
+        ttk.Label(box, text="3. Data type and scaling", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
+        dt = ttk.Frame(box)
         dt.pack(anchor="w", padx=10)
         type_var, scale_var, offset_var, unit_var = tk.StringVar(), tk.StringVar(value="1"), tk.StringVar(value="0"), tk.StringVar()
         ttk.Label(dt, text="Data type").grid(row=0, column=0, sticky="w", padx=4)
@@ -1535,10 +1550,10 @@ class ConnectionsScreen(ttk.Frame):
             ttk.Label(dt, text=text).grid(row=i, column=0, sticky="w", padx=4, pady=2)
             ttk.Entry(dt, textvariable=var, width=20).grid(row=i, column=1, padx=4, pady=2)
 
-        value_label = ttk.Label(win, text="", font=("Segoe UI", 22, "bold"))
+        value_label = ttk.Label(box, text="", font=("Segoe UI", 22, "bold"))
         if quick:
             value_label.pack(anchor="w", padx=10, pady=(10, 0))
-        result = ttk.Label(win, text="", wraplength=600, justify="left")
+        result = ttk.Label(box, text="", wraplength=600, justify="left")
         result.pack(anchor="w", padx=10, pady=(4, 0))
 
         def current():
@@ -1627,7 +1642,104 @@ class ConnectionsScreen(ttk.Frame):
             on_saved()
             win.destroy()
 
-        buttons = ttk.Frame(win)
+        if quick:
+            ttk.Label(side, text="Values to watch (several at once)", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 4))
+            cols = ("name", "address", "value", "quality")
+            watch = ttk.Treeview(side, columns=cols, show="headings", height=14, selectmode="extended")
+            for col, text, width in (("name", "Name", 140), ("address", "Address", 100), ("value", "Value", 190), ("quality", "Quality", 60)):
+                watch.heading(col, text=text)
+                watch.column(col, width=width, anchor="w" if col == "name" else "center")
+            for colour, hex_colour in HEALTH_COLOURS.items():
+                watch.tag_configure(colour, foreground=hex_colour)
+            watch.pack(fill="both", expand=True)
+            watch_status = ttk.Label(side, text="Press 'Add to list' to put the address on the left into the list.", foreground="gray",
+                                     wraplength=420, justify="left")
+            watch_status.pack(anchor="w", pady=(6, 0))
+            watched = []                             # tag dicts, in the order of the list
+            list_keep = tk.BooleanVar(value=False)
+            list_busy = {"reading": False}
+            list_results = queue.Queue()
+
+            def add_to_list():
+                try:
+                    tag = build()
+                except ValueError as exc:
+                    watch_status.configure(text=str(exc), foreground="#c62828")
+                    return
+                area, width = current()
+                address = s7_address.address_text(area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0)
+                if any(t["name"] == tag["name"] for t in watched):
+                    tag["name"] = f"{tag['name']}_{address}"
+                if any(t["name"] == tag["name"] for t in watched):
+                    watch_status.configure(text=f"'{tag['name']}' is already in the list.", foreground="#c62828")
+                    return
+                tag["_address"] = address
+                watched.append(tag)
+                watch.insert("", "end", iid=tag["name"], tags=("grey",), values=(tag["name"], address, "", "--"))
+                watch_status.configure(text=f"{len(watched)} value(s) in the list.", foreground="gray")
+                name_var.set(f"Tag{len(conn.tags) + len(watched) + 1}")
+
+            def remove_from_list():
+                for iid in watch.selection():
+                    watched[:] = [t for t in watched if t["name"] != iid]
+                    watch.delete(iid)
+
+            def read_list(*_):
+                if list_busy["reading"] or not win.winfo_exists() or not watched:
+                    return
+                list_busy["reading"] = True
+                tags = [{k: v for k, v in t.items() if k != "_address"} for t in watched]
+                threading.Thread(target=lambda: list_results.put(read_tags_once(conn, tags)), daemon=True).start()
+
+                def check():
+                    if not win.winfo_exists():
+                        return
+                    try:
+                        results = list_results.get_nowait()
+                    except queue.Empty:
+                        win.after(100, check)
+                        return
+                    list_busy["reading"] = False
+                    good = 0
+                    for tag in watched:
+                        if tag["name"] not in watch.get_children():
+                            continue
+                        value, error = results.get(tag["name"], (None, "no value"))
+                        if error is None:
+                            good += 1
+                        watch.item(tag["name"], tags=(("green" if error is None else "red"),),
+                                   values=(tag["name"], tag["_address"], show_value(value) if error is None else str(error).replace("Read operation failed: ", ""),
+                                   "Good" if error is None else "Bad"))
+                    watch_status.configure(text=f"\u25cf {good} of {len(watched)} read OK  ({time.strftime('%H:%M:%S')})",
+                                           foreground="#2e7d32" if good == len(watched) else "#e0a100" if good else "#c62828")
+                    if list_keep.get():
+                        win.after(1000, read_list)
+
+                win.after(100, check)
+
+            def save_list():
+                added = 0
+                for tag in watched:
+                    if any(t["name"] == tag["name"] for t in conn.tags):
+                        continue
+                    conn.tags.append({k: v for k, v in tag.items() if k != "_address"})
+                    added += 1
+                if added:
+                    on_saved()
+                watch_status.configure(text=f"{added} tag(s) added to the connection.", foreground="gray")
+
+            row = ttk.Frame(side)
+            row.pack(fill="x", pady=(8, 0))
+            ttk.Button(row, text="Add to list", command=add_to_list).pack(side="left")
+            ttk.Button(row, text="Remove selected", command=remove_from_list).pack(side="left", padx=6)
+            ttk.Button(row, text="Read list now", command=read_list).pack(side="left")
+            row2 = ttk.Frame(side)
+            row2.pack(fill="x", pady=(6, 0))
+            ttk.Checkbutton(row2, text="Keep reading the list (every second)", variable=list_keep,
+                            command=lambda: read_list() if list_keep.get() else None).pack(side="left")
+            ttk.Button(row2, text="Add all as tags", command=save_list).pack(side="right")
+
+        buttons = ttk.Frame(box)
         buttons.pack(anchor="e", padx=10, pady=14, fill="x")
         ttk.Button(buttons, text="Read now" if quick else "Test read", command=test_read).pack(side="left")
         if quick:
