@@ -1,4 +1,5 @@
 """Read-only S7 check, independent of ProtoProbe. Usage:  python s7check.py <PLC-IP> [rack] [slot] [db_number]
+   python s7check.py <PLC-IP> [rack] [slot] probe      -> tries DB1..DB60 and groups them by the PLC's answer
 Needs: pip install python-snap7==3.3.1.  Prints what the PLC answers for connect, CPU state, inputs (I), outputs (Q), markers (M) and one DB.
 Writes nothing to the PLC."""
 import sys
@@ -24,7 +25,8 @@ def main():
     ip = sys.argv[1]
     rack = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     slot = int(sys.argv[3]) if len(sys.argv) > 3 else 1
-    db = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+    probe = len(sys.argv) > 4 and sys.argv[4].lower() == "probe"
+    db = 1 if probe or len(sys.argv) <= 4 else int(sys.argv[4])
     print(f"snap7 {getattr(snap7, '__version__', '?')}  PLC {ip}  rack {rack} slot {slot}")
     client = snap7.client.Client()
     try:
@@ -36,6 +38,21 @@ def main():
     print("CONNECTED")
     attempt("CPU state", lambda: str(client.get_cpu_state()))
     attempt("CPU info", lambda: str(client.get_cpu_info()))
+    if probe:
+        groups = {}
+        for n in range(1, 61):
+            try:
+                client.read_area(Area.DB, n, 0, 2)
+                groups.setdefault("readable", []).append(n)
+            except Exception as exc:
+                groups.setdefault(str(exc), []).append(n)
+        client.disconnect()
+        print("DB1..DB60 grouped by the PLC's answer:")
+        for answer, dbs in groups.items():
+            print(f"  {answer}: DB {dbs if len(dbs) < 12 else str(dbs[:3]) + ' ... ' + str(dbs[-2:]) + ' (' + str(len(dbs)) + ' DBs)'}")
+        print("'Object does not exist' = no such DB. A different error for a DB you know exists = the DB is there but absolute reads are refused "
+              "(optimized block access, or protection).")
+        return 0
     print("Reads (2 bytes each):")
     ok = [
         attempt("Inputs  I0  (PE)", lambda: client.read_area(Area.PE, 0, 0, 2)),
