@@ -24,7 +24,7 @@ class FakeS7:
 
     def __init__(self, cfg):
         self.config = cfg
-        self.log = logging.getLogger("drivers.s7_driver")
+        self.log = logging.getLogger("edge_collector.s7")
 
     async def connect(self):
         pass
@@ -108,7 +108,7 @@ class QuietS7Scan(unittest.TestCase):
 
     def test_the_collector_counts_and_prints_nothing(self):
         c = protoprobe.ScanLogCollector()
-        lg = logging.getLogger("drivers.s7_driver")
+        lg = logging.getLogger("edge_collector.s7")
         lg.addHandler(c)
         err = io.StringIO()
         try:

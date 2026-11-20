@@ -494,7 +494,10 @@ def compute_32bit_candidates(current_value, next_value):
     return candidates
 
 
-DRIVER_LOGGERS = ("drivers.s7_driver", "drivers.mc_driver", "drivers.modbus_driver")
+# The drivers log under "edge_collector.s7", "edge_collector.mc", "edge_collector.modbus" ...; a handler on the parent catches all of them.
+# (It was once written as "drivers.s7_driver", which no driver uses: a stand-in logger of that name made the tests pass while the real
+# warnings still went to the console.)
+DRIVER_LOGGERS = ("edge_collector",)
 
 
 class ScanLogCollector(logging.Handler):
@@ -749,6 +752,58 @@ def run_full_plc_scan_job(conn, protocol, options, num_snapshots, delay_s, out_q
     out_queue.put(("job_done", None))
 
 
+class PollLogCollector(logging.Handler):
+    """Keeps the drivers' per-tag warnings of the latest poll ("[group] tag NAME decode error: TEXT"; the driver leaves that tag out of its answer),
+    so the Live values screen can say WHICH tag failed and why. Also stops Python printing those warnings to the console."""
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.errors = {}
+
+    def emit(self, record):
+        try:
+            args = record.args or ()
+            tag = str(args[1]) if len(args) >= 2 else "*"
+            text = str(args[-1]) if len(args) >= 3 else "read failed"
+        except Exception:
+            tag, text = "*", "error"
+        self.errors[tag] = text
+
+    def take(self):
+        errors, self.errors = self.errors, {}
+        return errors
+
+
+def show_value(value):
+    """A live value for the table: 1.0 -> 1, 20.0 -> 20 (the drivers scale everything as a float), other numbers as they are."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+HEALTH_COLOURS = {"green": "#2fb463", "amber": "#e0a100", "red": "#e0483f", "grey": "#8a8a8a"}
+
+
+def connection_health(status, health, tag_count):
+    """(colour, text) for one connection: green = connected and every tag reads, amber = connecting / some tags fail, red = no connection or no
+    tag reads, grey = not polling. `status` is the connection's status string, `health` the poller's last report (or None)."""
+    status = status or "idle"
+    if status.startswith("error"):
+        return "red", "No connection: " + status[len("error:"):].strip() if status.startswith("error:") else "No connection"
+    if status in ("idle", "stopped"):
+        return "grey", "Not reading"
+    if status == "connecting":
+        return "amber", "Connecting..."
+    if not health or not health.get("polls"):
+        return "amber", "Connected, waiting for the first reading"
+    bad = len(health.get("bad", {}))
+    if tag_count and bad >= tag_count:
+        first = next(iter(health["bad"].values()), "no value")
+        return "red", f"Connected, but no tag can be read ({first})"
+    if bad:
+        return "amber", f"Reading {max(0, tag_count - bad)} of {tag_count} tags; {bad} failing"
+    return "green", f"Reading {tag_count} tag(s) OK, {health.get('cycle_ms', 0):.0f} ms per poll"
+
+
 class Connection:
     def __init__(self, name, protocol, interface, plc_type=None):
         self.name = name
@@ -760,6 +815,7 @@ class Connection:
         self.latest_values = {}
         self.last_updated = {}
         self.status = "idle"
+        self.health = None                  # the poller's last report: polls, errors, cycle_ms, bad {tag: error text}
 
 
 class PollerThread(threading.Thread):
@@ -779,7 +835,18 @@ class PollerThread(threading.Thread):
     async def _run_async(self):
         group_cfg = self._build_driver_config()
         driver = DRIVER_FACTORY[self.conn.protocol](group_cfg)
+        collector = PollLogCollector()
+        loggers = [logging.getLogger(n) for n in DRIVER_LOGGERS]
+        for lg in loggers:
+            lg.addHandler(collector)
+        try:
+            await self._poll_loop(driver, collector)
+        finally:
+            for lg in loggers:
+                lg.removeHandler(collector)
 
+    async def _poll_loop(self, driver, collector):
+        polls = errors = 0
         try:
             self.out_queue.put(("conn_status", (self.conn.name, "connecting")))
             await driver.connect()
@@ -794,7 +861,19 @@ class PollerThread(threading.Thread):
                 values = await driver.poll()
                 ts = time.strftime("%H:%M:%S")
                 self.out_queue.put(("values", (self.conn.name, values, ts)))
+                polls += 1
+                bad = collector.take()
+                for t in self.conn.tags:                   # a tag with no value and no message still failed
+                    if t["name"] not in values:
+                        bad.setdefault(t["name"], "no value")
+                known = {t["name"] for t in self.conn.tags}
+                bad = {k: v for k, v in bad.items() if k in known}
+                errors += len(bad)
+                self.out_queue.put(("health", (self.conn.name, {
+                    "polls": polls, "errors": errors, "cycle_ms": (time.monotonic() - cycle_start) * 1000, "bad": bad, "at": ts})))
+                self.out_queue.put(("conn_status", (self.conn.name, "connected")))
             except Exception as e:
+                errors += 1
                 self.out_queue.put(("conn_status", (self.conn.name, f"error: {e}")))
 
             elapsed = time.monotonic() - cycle_start
@@ -1195,8 +1274,10 @@ class ConnectionsScreen(ttk.Frame):
         self.conn_tree = ttk.Treeview(
             self, columns=("protocol", "interface", "tags", "status"), show="headings", height=10
         )
-        for col, label, w in [("protocol", "Protocol", 200), ("interface", "Interface", 300),
-                               ("tags", "# Tags", 70), ("status", "Status", 140)]:
+        for colour, hex_colour in HEALTH_COLOURS.items():
+            self.conn_tree.tag_configure(colour, foreground=hex_colour)
+        for col, label, w in [("protocol", "Protocol", 200), ("interface", "Interface", 240),
+                               ("tags", "# Tags", 60), ("status", "Status", 340)]:
             self.conn_tree.heading(col, text=label)
             self.conn_tree.column(col, width=w, anchor="w")
         self.conn_tree.pack(fill="both", expand=True, padx=20, pady=8)
@@ -1211,13 +1292,18 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(ctrl, text="Load Multi-PLC Config", command=self.load_full_config).pack(side="left", padx=4)
 
     def refresh(self):
+        selected = self.conn_tree.selection()
         self.conn_tree.delete(*self.conn_tree.get_children())
         for name, conn in self.app.connections.items():
             iface_str = ", ".join(f"{k}={v}" for k, v in conn.interface.items())
             plc = getattr(conn, "plc_type", None)
-            self.conn_tree.insert("", "end", iid=name, values=(
-                PROTOCOL_LABELS[conn.protocol] + (f"  [{plc}]" if plc else ""), iface_str, len(conn.tags), conn.status
+            colour, text = connection_health(conn.status, getattr(conn, "health", None), len(conn.tags))
+            self.conn_tree.insert("", "end", iid=name, tags=(colour,), values=(
+                PROTOCOL_LABELS[conn.protocol] + (f"  [{plc}]" if plc else ""), iface_str, len(conn.tags), "\u25cf " + text
             ))
+        keep = [n for n in selected if n in self.app.connections]
+        if keep:
+            self.conn_tree.selection_set(keep)
 
     def open_add_connection(self):
         self._connection_dialog(existing=None)
@@ -2125,32 +2211,44 @@ class LiveValuesScreen(ttk.Frame):
         self.app = app
         ttk.Label(self, text="Live values", font=("Segoe UI", 16)).pack(anchor="w", padx=20, pady=(20, 12))
 
-        columns = ("connection", "protocol", "tag", "address", "data_type", "value", "updated")
+        # One line per connection: a coloured dot and what the poller reports (green = connected and every tag reads).
+        self.health_frame = ttk.Frame(self)
+        self.health_frame.pack(fill="x", padx=20, pady=(0, 6))
+
+        columns = ("connection", "tag", "address", "data_type", "value", "quality", "updated", "error")
         self.live_tree = ttk.Treeview(self, columns=columns, show="headings", height=20)
         headings = [
-            ("connection", "Connection", 130), ("protocol", "Protocol", 140),
-            ("tag", "Tag", 150), ("address", "Address / fields", 220),
-            ("data_type", "Data type", 90), ("value", "Live value", 110),
-            ("updated", "Last updated", 100),
+            ("connection", "Connection", 110), ("tag", "Tag", 140), ("address", "Address", 110),
+            ("data_type", "Data type", 80), ("value", "Live value", 100), ("quality", "Quality", 70),
+            ("updated", "Last updated", 90), ("error", "Error", 300),
         ]
         for col, label, w in headings:
             self.live_tree.heading(col, text=label)
-            self.live_tree.column(col, width=w, anchor="center")
+            self.live_tree.column(col, width=w, anchor="w" if col == "error" else "center")
+        for colour, hex_colour in HEALTH_COLOURS.items():
+            self.live_tree.tag_configure(colour, foreground=hex_colour)
         self.live_tree.pack(fill="both", expand=True, padx=20, pady=8)
 
     def refresh(self):
+        for child in self.health_frame.winfo_children():
+            child.destroy()
         self.live_tree.delete(*self.live_tree.get_children())
         for conn in self.app.connections.values():
-            tag_lookup = {t["name"]: t for t in conn.tags}
-            for tag_name, value in conn.latest_values.items():
-                tag_fields = tag_lookup.get(tag_name, {})
-                address_str = format_address(conn.protocol, tag_fields)
-                data_type = tag_fields.get("data_type", "")
-                iid = f"{conn.name}::{tag_name}"
-                self.live_tree.insert("", "end", iid=iid, values=(
-                    conn.name, PROTOCOL_LABELS.get(conn.protocol, conn.protocol), tag_name,
-                    address_str, data_type, value, conn.last_updated.get(tag_name, "")
-                ))
+            colour, text = connection_health(conn.status, getattr(conn, "health", None), len(conn.tags))
+            health = getattr(conn, "health", None) or {}
+            extra = f"   polls {health['polls']}, failed reads {health['errors']}" if health.get("polls") else ""
+            ttk.Label(self.health_frame, text=f"\u25cf {conn.name}: {text}{extra}",
+                      foreground=HEALTH_COLOURS[colour]).pack(anchor="w")
+            bad = health.get("bad", {})
+            for tag_fields in conn.tags:                     # every tag, also the ones that have no value yet or cannot be read
+                tag_name = tag_fields["name"]
+                has_value = tag_name in conn.latest_values and tag_name not in bad
+                quality = "Good" if has_value else ("Bad" if (tag_name in bad or health.get("polls")) else "--")
+                self.live_tree.insert("", "end", iid=f"{conn.name}::{tag_name}",
+                                      tags=(("green" if has_value else "red" if quality == "Bad" else "grey"),), values=(
+                    conn.name, tag_name, format_address(conn.protocol, tag_fields), tag_fields.get("data_type", ""),
+                    show_value(conn.latest_values.get(tag_name, "")) if has_value else "", quality,
+                    conn.last_updated.get(tag_name, ""), bad.get(tag_name, "")))
 
 
 # --- Output (JSON template + MQTT) -------------------------------------------
@@ -3143,6 +3241,12 @@ class App(tk.Tk):
                     if name in self.connections:
                         self.connections[name].status = status
                         self.refresh_dashboard()
+                elif kind == "health":
+                    name, report = data
+                    if name in self.connections:
+                        self.connections[name].health = report
+                        if "connections" in self.screens:
+                            self.screens["connections"].refresh()
                 elif kind == "values":
                     name, values, ts = data
                     if name in self.connections:
