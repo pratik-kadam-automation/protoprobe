@@ -50,6 +50,7 @@ from drivers.opcua_driver import OPCUADriver
 from drivers.bacnet_driver import BACnetDriver
 from commissioning_screen import CommissioningScreen
 from plc_reader import build_range_tags
+import plc_catalog
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
@@ -726,10 +727,11 @@ def run_full_plc_scan_job(conn, protocol, options, num_snapshots, delay_s, out_q
 
 
 class Connection:
-    def __init__(self, name, protocol, interface):
+    def __init__(self, name, protocol, interface, plc_type=None):
         self.name = name
         self.protocol = protocol
         self.interface = interface
+        self.plc_type = plc_type            # the gateway's PLC-type name (plc_catalog), or None when only a protocol was chosen
         self.tags = []
         self.thread = None
         self.latest_values = {}
@@ -1189,8 +1191,9 @@ class ConnectionsScreen(ttk.Frame):
         self.conn_tree.delete(*self.conn_tree.get_children())
         for name, conn in self.app.connections.items():
             iface_str = ", ".join(f"{k}={v}" for k, v in conn.interface.items())
+            plc = getattr(conn, "plc_type", None)
             self.conn_tree.insert("", "end", iid=name, values=(
-                PROTOCOL_LABELS[conn.protocol], iface_str, len(conn.tags), conn.status
+                PROTOCOL_LABELS[conn.protocol] + (f"  [{plc}]" if plc else ""), iface_str, len(conn.tags), conn.status
             ))
 
     def open_add_connection(self):
@@ -1206,7 +1209,7 @@ class ConnectionsScreen(ttk.Frame):
     def _connection_dialog(self, existing):
         win = tk.Toplevel(self)
         win.title("Edit Connection" if existing else "Add Connection")
-        win.geometry("460x420")
+        win.geometry("480x600")
         win.grab_set()
 
         ttk.Label(win, text="Connection Name").pack(anchor="w", padx=8, pady=(8, 0))
@@ -1215,6 +1218,16 @@ class ConnectionsScreen(ttk.Frame):
         name_entry.pack(anchor="w", padx=8)
         if existing:
             name_entry.configure(state="disabled")
+
+        ttk.Label(win, text="PLC type (optional: the same list as the gateway's protocol box)").pack(anchor="w", padx=8, pady=(8, 0))
+        type_entries = plc_catalog.dropdown_entries()
+        type_texts = ["(choose the protocol below)"] + [t for t, _ in type_entries]
+        type_key_of = {t: k for t, k in type_entries}
+        type_cb = ttk.Combobox(win, values=type_texts, state="readonly", width=58)
+        existing_type = getattr(existing, "plc_type", None) if existing else None
+        type_cb.set(next((t for t, k in type_entries if k == existing_type), type_texts[0]))
+        type_cb.pack(anchor="w", padx=8)
+        type_overrides = {}                 # interface defaults of the chosen PLC type (for example rack and slot)
 
         ttk.Label(win, text="Protocol").pack(anchor="w", padx=8, pady=(8, 0))
         protocol_cb = ttk.Combobox(win, values=list(PROTOCOL_LABELS.values()), state="readonly", width=35)
@@ -1240,11 +1253,16 @@ class ConnectionsScreen(ttk.Frame):
                 ttk.Label(row, text=label, width=16).pack(side="left")
                 e = ttk.Entry(row, width=25)
                 val = str(existing.interface.get(label, default)) if existing else default
+                if label in type_overrides:
+                    val = str(type_overrides[label])
                 e.insert(0, val)
                 e.pack(side="left")
                 field_entries[label] = e
 
-            if protocol_key == "bacnet_ip":
+            chosen = type_key_of.get(type_cb.get())
+            if chosen:
+                hint_label.configure(text=plc_catalog.describe(chosen))
+            elif protocol_key == "bacnet_ip":
                 hint_label.configure(
                     text="local_ip = this laptop's own IP (for ProtoProbe's identity on the "
                          "network). device_ip = the target BACnet device's IP. device_instance "
@@ -1256,7 +1274,23 @@ class ConnectionsScreen(ttk.Frame):
             else:
                 hint_label.configure(text="")
 
-        protocol_cb.bind("<<ComboboxSelected>>", render_fields)
+        def type_chosen(*_):
+            type_overrides.clear()
+            key = type_key_of.get(type_cb.get())
+            if key:
+                plc = plc_catalog.get(key)
+                if plc.driver:
+                    protocol_cb.set(PROTOCOL_LABELS[plc.driver])
+                    type_overrides.update(plc.interface)
+            render_fields()
+
+        def protocol_chosen(*_):
+            type_cb.set(type_texts[0])          # choosing a protocol by hand means no PLC type
+            type_overrides.clear()
+            render_fields()
+
+        type_cb.bind("<<ComboboxSelected>>", type_chosen)
+        protocol_cb.bind("<<ComboboxSelected>>", protocol_chosen)
         render_fields()
 
         def save():
@@ -1264,17 +1298,23 @@ class ConnectionsScreen(ttk.Frame):
             if not name:
                 messagebox.showerror("Invalid", "Connection name required")
                 return
+            chosen_type = type_key_of.get(type_cb.get())
+            if chosen_type and not plc_catalog.get(chosen_type).driver:
+                messagebox.showinfo("Not supported yet", f"ProtoProbe cannot connect to {plc_catalog.get(chosen_type).label} yet.\n"
+                                    "Pick another PLC type, or choose the protocol by hand below.")
+                return
             protocol_key = label_to_key[protocol_cb.get()]
             interface = {k: coerce(e.get().strip()) for k, e in field_entries.items()}
 
             if existing:
                 existing.protocol = protocol_key
                 existing.interface = interface
+                existing.plc_type = chosen_type
             else:
                 if name in self.app.connections:
                     messagebox.showerror("Duplicate", f"Connection '{name}' already exists")
                     return
-                self.app.connections[name] = Connection(name, protocol_key, interface)
+                self.app.connections[name] = Connection(name, protocol_key, interface, chosen_type)
 
             self.refresh()
             self.app.refresh_dashboard()

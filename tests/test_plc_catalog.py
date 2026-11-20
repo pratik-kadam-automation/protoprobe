@@ -97,3 +97,23 @@ class Catalog(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DropdownHelpers(unittest.TestCase):
+    def test_every_gateway_protocol_is_in_the_dropdown_in_order(self):
+        import plc_catalog as pc
+        self.assertEqual([k for _t, k in pc.dropdown_entries()], list(pc.GATEWAY_PROTOCOLS))
+
+    def test_unsupported_types_say_so(self):
+        import plc_catalog as pc
+        texts = {k: t for t, k in pc.dropdown_entries()}
+        self.assertIn("[not supported yet]", texts["FINS_TCP"])
+        self.assertNotIn("[not supported yet]", texts["S7_1200"])
+
+    def test_describe_connectable_and_not(self):
+        import plc_catalog as pc
+        self.assertIn("ProtoProbe can connect", pc.describe("Q_TCP"))
+        self.assertIn("cannot connect to this type yet", pc.describe("FINS_TCP"))
+        self.assertIn("PUT/GET", pc.describe("S7_1200"))
+        for p in pc.CATALOG:                       # never raises, whatever the type
+            self.assertTrue(pc.describe(p.key))

@@ -131,6 +131,33 @@ def address_preview(key, flag, number):
     return f"{text}({area.width})"
 
 
+def dropdown_entries():
+    """[(text, key)] for a PLC-type dropdown: every gateway protocol, in the gateway's order. Types ProtoProbe cannot connect to yet say so."""
+    return [(f"{p.key}  --  {p.label}" + ("" if p.driver else "   [not supported yet]"), p.key) for p in CATALOG]
+
+
+def describe(key):
+    """A few plain lines for the Add Connection window: can ProtoProbe connect, what the PLC's address areas are, and what to watch out for."""
+    p = get(key)
+    lines = []
+    if p.driver:
+        readable = ", ".join(f"{a.flag} ({a.name})" for a in p.areas if a.readable) or "none listed"
+        lines.append(f"ProtoProbe can connect to this type. It reads: {readable}.")
+        not_read = [a for a in p.areas if not a.readable]
+        if not_read:
+            lines.append("The PLC also has (not readable by ProtoProbe yet): " + ", ".join(a.flag for a in not_read) + ".")
+    else:
+        lines.append(f"{p.label}: ProtoProbe cannot connect to this type yet (no driver). It is listed so the list matches the gateway's.")
+        if p.areas:
+            lines.append("Address areas on the gateway: " + ", ".join(f"{a.flag} ({a.name}, {a.width})" for a in p.areas) + ".")
+    if not p.verified and p.areas:
+        lines.append("Area list not seen on the gateway: check the PLC manual.")
+    if not p.complete:
+        lines.append("The list may be incomplete (only part of it was seen).")
+    lines.extend(p.notes)
+    return "\n".join(lines)
+
+
 def modbus_zero_based(number):
     """ASSUMPTION, to be proven against a simulator: the gateway's number is the 1-based Modbus reference (its preview shows 00001 for 1),
     while ProtoProbe's Modbus tags use the protocol's 0-based address."""
