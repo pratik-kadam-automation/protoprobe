@@ -18,13 +18,19 @@ def walk(w):
 
 class ScanPresetDialog(unittest.TestCase):
     def setUp(self):
+        # Another test may leave its own Tk window as tkinter's default root; checkbox variables would then live in that window's interpreter.
+        # Use a clean default root for this test and give the old one back afterwards.
+        self._saved_root = tk._default_root
+        tk._default_root = None
         try:
             self.app = pp.App()
         except tk.TclError as exc:
+            tk._default_root = self._saved_root
             self.skipTest(f"no display: {exc}")
 
     def tearDown(self):
         self.app.destroy()
+        tk._default_root = self._saved_root
 
     def open_for(self, protocol, interface, plc_type=None):
         conn = pp.Connection("c1", protocol, interface, plc_type)

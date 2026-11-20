@@ -18,9 +18,14 @@ def walk(w):
 
 class AddConnectionType(unittest.TestCase):
     def setUp(self):
+        # Another test may leave its own Tk window as tkinter's default root; checkbox variables would then live in that window's interpreter.
+        # Use a clean default root for this test and give the old one back afterwards.
+        self._saved_root = tk._default_root
+        tk._default_root = None
         try:
             self.app = pp.App()
         except tk.TclError as exc:
+            tk._default_root = self._saved_root
             self.skipTest(f"no display: {exc}")
         self.shown = []
         self._orig = messagebox.showinfo
@@ -34,6 +39,7 @@ class AddConnectionType(unittest.TestCase):
     def tearDown(self):
         messagebox.showinfo = self._orig
         self.app.destroy()
+        tk._default_root = self._saved_root
 
     def pick(self, prefix):
         text = next(v for v in self.type_cb["values"] if v.startswith(prefix))
