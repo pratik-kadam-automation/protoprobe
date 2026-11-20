@@ -53,6 +53,7 @@ from plc_reader import build_range_tags
 import plc_catalog
 import s7_address
 import signal_hints
+import candidates
 import workspace
 
 NAV_ITEMS = [
@@ -3117,6 +3118,7 @@ class ScanResultsScreen(ttk.Frame):
         btn_row = ttk.Frame(self)
         btn_row.pack(fill="x", padx=20, pady=4)
         ttk.Button(btn_row, text="Add selected to tag list", command=self.add_selected).pack(side="left", padx=2)
+        ttk.Button(btn_row, text="Export suggestions...", command=self.export_suggestions).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Clear all results", command=self.clear_results).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Stop running scan", command=self.stop_scan).pack(side="left", padx=2)
 
@@ -3244,6 +3246,7 @@ class ScanResultsScreen(ttk.Frame):
         self.tree.delete(*self.tree.get_children())
         rows = sorted(self.app.scan_results, key=lambda r: not r["changed"])
         shown = 0
+        self._shown_rows = []                       # what the table shows now: the Export button exports exactly this
         for i, r in enumerate(rows):
             type_label = r.get("type_label", "?")
             if self.filter_vars and type_label not in active_types:
@@ -3257,11 +3260,12 @@ class ScanResultsScreen(ttk.Frame):
             if not signal_hints.matches(hint, wanted):
                 continue
 
+            self._shown_rows.append(r)
             iid = f"{r['conn_name']}::{r['job_label']}::{r['name']}::{i}"
             float_guess = r.get("float32_guess")
             float_text = f"{float_guess} (with {r.get('float32_pair_with')})" if float_guess is not None else "--"
             if r.get("bit_area"):
-                float_text = "bits " + bits_summary(r["tag"]["area"], r["bits_on"], r["bits_changed"])
+                float_text = "bits " + bits_summary(r["tag"]["area"], r.get("bits_on", []), r.get("bits_changed", []))
             elif r["tag"].get("area") == "M" and (r.get("bits_on") or r.get("bits_changed")):
                 float_text = f"{float_text}  |  bits " + bits_summary("M", r["bits_on"], r["bits_changed"])
             raw = r.get("raw_value")
@@ -3279,6 +3283,25 @@ class ScanResultsScreen(ttk.Frame):
             )
         else:
             self.update_status()
+
+    def export_suggestions(self):
+        """Write the suggested OEE / predictive candidates of the rows now shown to a CSV or JSON file (guesses: see the confidence column)."""
+        rows = candidates.rows_from_results(
+            getattr(self, "_shown_rows", []), lambda name: self.app.connections[name].protocol if name in self.app.connections else "",
+            format_address, hint_for_result, signal_hints.classify_bits)
+        if not rows:
+            messagebox.showinfo("Nothing to export", "No row shown has a suggestion for OEE or predictive use yet.\n"
+                                "Scan the machine while it runs (more snapshots give better suggestions), then try again.")
+            return None
+        path = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="protoprobe-candidates.csv",
+                                            filetypes=[("CSV (Excel)", "*.csv"), ("JSON", "*.json")])
+        if not path:
+            return None
+        text = candidates.to_json(rows, APP_VERSION) if path.lower().endswith(".json") else candidates.to_csv(rows)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        messagebox.showinfo("Exported", f"{len(rows)} suggestion(s) written to:\n{path}\n\nThey are guesses from the scan: confirm each on the machine.")
+        return path
 
     def add_selected(self):
         sel = self.tree.selection()

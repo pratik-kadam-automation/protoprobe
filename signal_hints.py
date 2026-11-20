@@ -10,7 +10,7 @@ from dataclasses import dataclass
 class Hint:
     kind: str                  # idle | constant | counter | countdown | flags | measurement | state | blink | steady_on | unknown
     text: str                  # one line for the table
-    oee: str = ""              # what it could be for OEE: "run state", "production count", "setting" ('' = nothing)
+    oee: str = ""              # what it could be for OEE: "run state", "production count" ('' = nothing)
     predictive: str = ""       # what it could be for predictive maintenance: "trend", "usage count" ('' = nothing)
 
 
@@ -32,7 +32,7 @@ def classify_word(values):
     if len(set(v)) == 1:
         if v[0] == 0:
             return Hint("idle", "always 0: unused, or the machine was stopped")
-        return Hint("constant", f"stayed at {v[0]}: a setting or configured value (planned time, ideal cycle ...)", oee="setting")
+        return Hint("constant", f"stayed at {v[0]}: a setting or configured value (planned time, ideal cycle ...); not flagged as a candidate, a PLC holds many")
     diffs = [b - a for a, b in zip(v, v[1:])]
     if all(d >= 0 for d in diffs):
         return Hint("counter", "only went up: a counter (parts, cycles, run time)", oee="production count", predictive="usage count")
