@@ -13,7 +13,7 @@ _DATA_TYPES = {                   # width -> data types the driver decodes; the 
     "word": ("int16", "uint16"),
     "dword": ("int32", "uint32", "float32_be"),
 }
-_FRIENDLY = {"bit": "Bool", "int16": "Int16", "uint16": "UInt16", "int32": "Int32 (DInt)", "uint32": "UInt32 (UDInt)", "float32_be": "Float (Real)"}
+_FRIENDLY = {"bit": "Bool", "int16": "Int16", "uint16": "UInt16", "int32": "Int32 / DInt", "uint32": "UInt32 / UDInt", "float32_be": "Float / Real"}
 
 
 def readable(width):

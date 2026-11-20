@@ -133,3 +133,61 @@ class GuidedDialog(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuickRead(unittest.TestCase):
+    def setUp(self):
+        self._saved_root = tk._default_root
+        tk._default_root = None
+        try:
+            self.app = pp.App()
+        except tk.TclError as exc:
+            tk._default_root = self._saved_root
+            self.skipTest(f"no display: {exc}")
+        self.old = pp.DRIVER_FACTORY["s7comm"]
+        pp.DRIVER_FACTORY["s7comm"] = FakeS7
+        self.conn = pp.Connection("c", "s7comm", {"ip": "192.0.2.1", "rack": 0, "slot": 1})
+        self.app.connections["c"] = self.conn
+        self.scr = self.app.screens["connections"]
+        self.scr.refresh()
+        self.scr.conn_tree.selection_set("c")
+
+    def tearDown(self):
+        pp.DRIVER_FACTORY["s7comm"] = self.old
+        self.app.destroy()
+        tk._default_root = self._saved_root
+
+    def pump(self, seconds):
+        import time
+        end = time.time() + seconds
+        while time.time() < end:
+            self.app.update()
+            time.sleep(0.02)
+
+    def test_read_now_shows_the_value_without_making_a_tag(self):
+        win = self.scr.open_quick_read()
+        self.app.update()
+        read = next(w for w in walk(win) if w.winfo_class() == "TButton" and w.cget("text") == "Read now")
+        read.invoke()
+        self.pump(1.0)
+        big = [w for w in walk(win) if w.winfo_class() == "TLabel" and str(w.cget("text")) == "12.5"]
+        self.assertTrue(big)
+        self.assertEqual(self.conn.tags, [])
+
+    def test_add_as_tag_keeps_it(self):
+        win = self.scr.open_quick_read()
+        self.app.update()
+        pp.messagebox.showinfo = lambda *a, **k: None
+        next(w for w in walk(win) if w.winfo_class() == "TButton" and w.cget("text") == "Add as tag").invoke()
+        self.assertEqual(len(self.conn.tags), 1)
+
+    def test_it_opens_from_inside_the_scan_window(self):
+        pp.messagebox.showinfo = lambda *a, **k: None
+        self.scr.open_scan_dialog()
+        self.app.update()
+        scan = [w for w in walk(self.app) if isinstance(w, tk.Toplevel)][0]
+        next(w for w in walk(scan) if w.winfo_class() == "TButton" and str(w.cget("text")).startswith("Read one value")).invoke()
+        self.app.update()
+        tops = [w for w in walk(self.app) if isinstance(w, tk.Toplevel)]
+        self.assertEqual(len(tops), 2)
+        self.assertTrue(any(str(w.title()).startswith("Read a value") for w in tops))

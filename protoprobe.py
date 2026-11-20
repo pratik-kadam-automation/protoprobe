@@ -1307,6 +1307,7 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(btn_row, text="Edit Selected", command=self.open_edit_connection).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Remove Selected", command=self.remove_connection).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Manage Tags", command=self.open_tag_manager).pack(side="left", padx=2)
+        ttk.Button(btn_row, text="Read a Value", command=self.open_quick_read).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Scan for Live Tags", command=self.open_scan_dialog).pack(side="left", padx=2)
 
         self.conn_tree = ttk.Treeview(
@@ -1476,15 +1477,16 @@ class ConnectionsScreen(ttk.Frame):
         self.refresh()
         self.app.refresh_dashboard()
 
-    def _s7_guided_dialog(self, parent, conn, on_saved):
+    def _s7_guided_dialog(self, parent, conn, on_saved, quick=False):
         """Add one Siemens tag the way the gateway's own dialog does it: pick the register type, enter the address, see the address spelled out,
         choose the data type, press Test read to see the value right away."""
         win = tk.Toplevel(parent)
-        win.title("Add Siemens tag")
-        win.geometry("640x640")
-        win.grab_set()
+        win.title(f"Read a value -- {conn.name}" if quick else "Add Siemens tag")
+        win.geometry("640x700" if quick else "640x640")
+        if not quick:
+            win.grab_set()
 
-        ttk.Label(win, text="Tag name").pack(anchor="w", padx=10, pady=(10, 0))
+        ttk.Label(win, text="Tag name (used if you add it as a tag)" if quick else "Tag name").pack(anchor="w", padx=10, pady=(10, 0))
         name_var = tk.StringVar(value=f"Tag{len(conn.tags) + 1}")
         ttk.Entry(win, textvariable=name_var, width=40).pack(anchor="w", padx=10)
 
@@ -1533,8 +1535,11 @@ class ConnectionsScreen(ttk.Frame):
             ttk.Label(dt, text=text).grid(row=i, column=0, sticky="w", padx=4, pady=2)
             ttk.Entry(dt, textvariable=var, width=20).grid(row=i, column=1, padx=4, pady=2)
 
+        value_label = ttk.Label(win, text="", font=("Segoe UI", 22, "bold"))
+        if quick:
+            value_label.pack(anchor="w", padx=10, pady=(10, 0))
         result = ttk.Label(win, text="", wraplength=600, justify="left")
-        result.pack(anchor="w", padx=10, pady=(10, 0))
+        result.pack(anchor="w", padx=10, pady=(4, 0))
 
         def current():
             area, width = choice.get().split("|")
@@ -1564,13 +1569,18 @@ class ConnectionsScreen(ttk.Frame):
         update()
 
         test_queue = queue.Queue()
+        keep_var = tk.BooleanVar(value=False)
+        busy = {"reading": False}
 
-        def test_read():
+        def test_read(*_):
+            if busy["reading"] or not win.winfo_exists():
+                return
             try:
                 tag = build()
             except ValueError as exc:
                 result.configure(text=str(exc), foreground="#c62828")
                 return
+            busy["reading"] = True
             result.configure(text="Reading...", foreground="gray")
 
             def worker():
@@ -1579,18 +1589,30 @@ class ConnectionsScreen(ttk.Frame):
             threading.Thread(target=worker, daemon=True).start()
 
             def check():
+                if not win.winfo_exists():
+                    return
                 try:
                     value, error = test_queue.get_nowait()
                 except queue.Empty:
-                    win.after(150, check)
+                    win.after(100, check)
                     return
+                busy["reading"] = False
+                stamp = time.strftime("%H:%M:%S")
                 if error is None:
-                    result.configure(text=f"\u25cf Read OK: {show_value(value)}", foreground="#2e7d32")
+                    value_label.configure(text=str(show_value(value)), foreground="#2e7d32")
+                    result.configure(text=f"\u25cf Read OK  ({stamp})", foreground="#2e7d32")
                 else:
                     hint = explain_s7_error(error)
-                    result.configure(text=f"\u25cf Read failed: {error}" + (f"\n{hint}" if hint else ""), foreground="#c62828")
+                    value_label.configure(text="--", foreground="#c62828")
+                    result.configure(text=f"\u25cf Read failed ({stamp}): {error}" + (f"\n{hint}" if hint else ""), foreground="#c62828")
+                if keep_var.get():
+                    win.after(1000, test_read)
 
-            win.after(150, check)
+            win.after(100, check)
+
+        def keep_toggled(*_):
+            if keep_var.get():
+                test_read()
 
         def save():
             try:
@@ -1607,9 +1629,14 @@ class ConnectionsScreen(ttk.Frame):
 
         buttons = ttk.Frame(win)
         buttons.pack(anchor="e", padx=10, pady=14, fill="x")
-        ttk.Button(buttons, text="Test read", command=test_read).pack(side="left")
-        ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right", padx=4)
-        ttk.Button(buttons, text="OK", command=save).pack(side="right", padx=4)
+        ttk.Button(buttons, text="Read now" if quick else "Test read", command=test_read).pack(side="left")
+        if quick:
+            ttk.Checkbutton(buttons, text="Keep reading (every second)", variable=keep_var, command=keep_toggled).pack(side="left", padx=12)
+            ttk.Button(buttons, text="Close", command=win.destroy).pack(side="right", padx=4)
+            ttk.Button(buttons, text="Add as tag", command=save).pack(side="right", padx=4)
+        else:
+            ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right", padx=4)
+            ttk.Button(buttons, text="OK", command=save).pack(side="right", padx=4)
         return win
 
     def open_tag_manager(self):
@@ -1785,6 +1812,88 @@ class ConnectionsScreen(ttk.Frame):
 
         tree.bind("<Double-1>", lambda e: edit_selected())
 
+    def open_quick_read(self, parent=None):
+        """Read ONE value of the selected connection, the way the gateway's own interface lets you: pick the register type, enter the address,
+        see the value (and keep it updating) without making a tag first."""
+        sel = self.conn_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a connection", "Click a connection's row above first")
+            return
+        conn = self.app.connections[sel[0]]
+        if conn.protocol == "s7comm":
+            def saved():
+                self.refresh()
+                self.app.refresh_dashboard()
+                messagebox.showinfo("Tag added", "Added to this connection's tags. It will show on Live values once polling is started.")
+            return self._s7_guided_dialog(parent or self, conn, saved, quick=True)
+        return self._generic_quick_read(conn, parent)
+
+    def _generic_quick_read(self, conn, parent=None):
+        """The same one-value reader for the other protocols: the tag fields of the protocol, then Read now."""
+        win = tk.Toplevel(parent or self)
+        win.title(f"Read a value -- {conn.name}")
+        win.geometry("520x420")
+        entries = {}
+        for label, default in TAG_FIELDS.get(conn.protocol, []):
+            row = ttk.Frame(win)
+            row.pack(fill="x", padx=10, pady=3)
+            ttk.Label(row, text=label, width=16).pack(side="left")
+            if label in FIELD_OPTIONS:
+                e = ttk.Combobox(row, values=FIELD_OPTIONS[label]["options"], width=20, state="readonly")
+                e.set(default)
+            else:
+                e = ttk.Entry(row, width=24)
+                e.insert(0, str(default))
+            e.pack(side="left")
+            entries[label] = e
+        value_label = ttk.Label(win, text="", font=("Segoe UI", 22, "bold"))
+        value_label.pack(anchor="w", padx=10, pady=(12, 0))
+        result = ttk.Label(win, text="", wraplength=490, justify="left")
+        result.pack(anchor="w", padx=10)
+        keep_var = tk.BooleanVar(value=False)
+        results = queue.Queue()
+        busy = {"reading": False}
+
+        def read_now(*_):
+            if busy["reading"] or not win.winfo_exists():
+                return
+            tag = {"name": "quick"}
+            for k, e in entries.items():
+                raw = e.get().strip()
+                tag[k] = raw if k in FIELD_OPTIONS else coerce(raw)
+            busy["reading"] = True
+            result.configure(text="Reading...", foreground="gray")
+            threading.Thread(target=lambda: results.put(read_tag_once(conn, tag)), daemon=True).start()
+
+            def check():
+                if not win.winfo_exists():
+                    return
+                try:
+                    value, error = results.get_nowait()
+                except queue.Empty:
+                    win.after(100, check)
+                    return
+                busy["reading"] = False
+                stamp = time.strftime("%H:%M:%S")
+                if error is None:
+                    value_label.configure(text=str(show_value(value)), foreground="#2e7d32")
+                    result.configure(text=f"\u25cf Read OK  ({stamp})", foreground="#2e7d32")
+                else:
+                    value_label.configure(text="--", foreground="#c62828")
+                    result.configure(text=f"\u25cf Read failed ({stamp}): {error}", foreground="#c62828")
+                if keep_var.get():
+                    win.after(1000, read_now)
+
+            win.after(100, check)
+
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=10, pady=14)
+        ttk.Button(row, text="Read now", command=read_now).pack(side="left")
+        ttk.Checkbutton(row, text="Keep reading (every second)", variable=keep_var,
+                        command=lambda: read_now() if keep_var.get() else None).pack(side="left", padx=12)
+        ttk.Button(row, text="Close", command=win.destroy).pack(side="right")
+        return win
+
     def open_scan_dialog(self):
         sel = self.conn_tree.selection()
         if not sel:
@@ -1814,6 +1923,8 @@ class ConnectionsScreen(ttk.Frame):
                  "fix the data type after adding a tag if it's actually 32-bit or float.",
             wraplength=600, foreground="gray", justify="left",
         ).pack(anchor="w", padx=10, pady=(10, 10))
+
+        ttk.Button(win, text="Read one value instead...", command=lambda: self.open_quick_read(win)).pack(anchor="w", padx=10, pady=(0, 4))
 
         opt_row = ttk.Frame(win)
         opt_row.pack(fill="x", padx=10, pady=4)
