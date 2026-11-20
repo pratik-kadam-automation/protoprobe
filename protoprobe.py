@@ -30,7 +30,7 @@ import asyncio
 import time
 import uuid
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
 APP_VERSION = "0.3.2"
@@ -54,6 +54,7 @@ import plc_catalog
 import s7_address
 import signal_hints
 import candidates
+import output_json
 import workspace
 import arpscan
 
@@ -2728,22 +2729,102 @@ class LiveValuesScreen(ttk.Frame):
         self.health_frame = ttk.Frame(self)
         self.health_frame.pack(fill="x", padx=20, pady=(0, 6))
 
-        columns = ("connection", "tag", "address", "data_type", "value", "quality", "updated", "error")
-        self.live_tree = ttk.Treeview(self, columns=columns, show="headings", height=20)
+        columns = ("output", "connection", "tag", "address", "data_type", "value", "quality", "updated", "error")
+        self.live_tree = ttk.Treeview(self, columns=columns, show="headings", height=10)
         headings = [
-            ("connection", "Connection", 110), ("tag", "Tag", 140), ("address", "Address", 110),
+            ("output", "In output JSON", 130), ("connection", "Connection", 110), ("tag", "Tag", 140), ("address", "Address", 110),
             ("data_type", "Data type", 80), ("value", "Live value", 100), ("quality", "Quality", 70),
             ("updated", "Last updated", 90), ("error", "Error", 300),
         ]
         for col, label, w in headings:
             self.live_tree.heading(col, text=label)
-            self.live_tree.column(col, width=w, anchor="w" if col == "error" else "center")
+            self.live_tree.column(col, width=w, anchor="w" if col in ("error", "output") else "center")
         for colour, hex_colour in HEALTH_COLOURS.items():
             self.live_tree.tag_configure(colour, foreground=hex_colour)
         self.live_tree.pack(fill="both", expand=True, padx=20, pady=8)
         self.live_tree.bind("<Double-1>", lambda e: self.edit_selected_tag())
+
+        # Tick tags for the copy-and-paste output JSON (deployment_id, gateway_id, machine_id, timestamp, data).
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", padx=20, pady=(0, 4))
+        ttk.Button(bar, text="Include selected in output JSON", command=self.include_selected).pack(side="left")
+        ttk.Button(bar, text="Remove selected", command=self.remove_selected).pack(side="left", padx=6)
+        self.out_mode = tk.StringVar(value="values")
+        ttk.Radiobutton(bar, text="Show live values", variable=self.out_mode, value="values", command=self.render_output).pack(side="left", padx=(16, 4))
+        ttk.Radiobutton(bar, text="Show names only (template)", variable=self.out_mode, value="names", command=self.render_output).pack(side="left")
+        ttk.Button(bar, text="Copy JSON", command=self.copy_output).pack(side="right")
+        ids = ttk.Frame(self)
+        ids.pack(fill="x", padx=20, pady=(0, 4))
+        self.out_ids = {}
+        for key in output_json.KEYS:
+            ttk.Label(ids, text=key).pack(side="left")
+            var = tk.StringVar()
+            var.trace_add("write", lambda *_: self.render_output())
+            ttk.Entry(ids, textvariable=var, width=22).pack(side="left", padx=(4, 12))
+            self.out_ids[key] = var
+        ttk.Button(ids, text="Fill from wizard", command=self.fill_ids).pack(side="left")
+        self.out_text = tk.Text(self, height=9, font=("Consolas", 9))
+        self.app.dark_aware_texts.append(self.out_text)
+        self.out_text.pack(fill="x", padx=20, pady=(0, 4))
+        self.out_warn = ttk.Label(self, text="", foreground="#c0392b", wraplength=900, justify="left")
+        self.out_warn.pack(anchor="w", padx=20)
         ttk.Label(self, text="Double-click a row to change that tag's register, address, data type, scale or unit (reading only: nothing is written to the PLC).",
                   foreground="gray").pack(anchor="w", padx=20, pady=(0, 8))
+
+    def _selected_tags(self):
+        found = []
+        for iid in self.live_tree.selection():
+            if "::" not in iid:
+                continue
+            conn_name, tag_name = iid.split("::", 1)
+            conn = self.app.connections.get(conn_name)
+            tag = next((t for t in conn.tags if t["name"] == tag_name), None) if conn else None
+            if tag:
+                found.append((conn, tag))
+        return found
+
+    def include_selected(self, name=None):
+        """Tick the selected tags. One tag asks for its name in the JSON (default: the tag name); several keep their tag names."""
+        chosen = self._selected_tags()
+        if not chosen:
+            messagebox.showinfo("Select a row", "Select one or more rows first.")
+            return
+        if len(chosen) == 1:
+            conn, tag = chosen[0]
+            if name is None:
+                name = simpledialog.askstring("Name in the output JSON", "Name to show in \"data\" (for example: machine status):",
+                                              initialvalue=tag.get("output") or tag["name"], parent=self)
+            if not name or not name.strip():
+                return
+            tag["output"] = name.strip()
+        else:
+            for conn, tag in chosen:
+                tag["output"] = tag.get("output") or tag["name"]
+        self.refresh()
+
+    def remove_selected(self):
+        for conn, tag in self._selected_tags():
+            tag.pop("output", None)
+        self.refresh()
+
+    def fill_ids(self):
+        screen = self.app.screens.get("commission")
+        answers = screen.collect_answers() if screen else {}
+        for key in output_json.KEYS:
+            if answers.get(key):
+                self.out_ids[key].set(answers[key])
+
+    def render_output(self):
+        if not hasattr(self, "out_text"):
+            return
+        payload, warnings = output_json.build_output({k: v.get() for k, v in self.out_ids.items()}, self.app.connections, self.out_mode.get())
+        self.out_text.delete("1.0", "end")
+        self.out_text.insert("1.0", output_json.to_text(payload))
+        self.out_warn.configure(text="\n".join(warnings))
+
+    def copy_output(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.out_text.get("1.0", "end").strip())
 
     def edit_selected_tag(self):
         selected = self.live_tree.selection()
@@ -2812,6 +2893,7 @@ class LiveValuesScreen(ttk.Frame):
     def refresh(self):
         for child in self.health_frame.winfo_children():
             child.destroy()
+        kept = self.live_tree.selection()            # a refresh must not drop the rows the user just selected
         self.live_tree.delete(*self.live_tree.get_children())
         for conn in self.app.connections.values():
             colour, text = connection_health(conn.status, getattr(conn, "health", None), len(conn.tags))
@@ -2826,9 +2908,14 @@ class LiveValuesScreen(ttk.Frame):
                 quality = "Good" if has_value else ("Bad" if (tag_name in bad or health.get("polls")) else "--")
                 self.live_tree.insert("", "end", iid=f"{conn.name}::{tag_name}",
                                       tags=(("green" if has_value else "red" if quality == "Bad" else "grey"),), values=(
+                    ("\u2713 " + tag_fields["output"]) if tag_fields.get("output") else "",
                     conn.name, tag_name, format_address(conn.protocol, tag_fields), tag_fields.get("data_type", ""),
                     show_value(conn.latest_values.get(tag_name, "")) if has_value else "", quality,
                     conn.last_updated.get(tag_name, ""), bad.get(tag_name, "")))
+        still = [i for i in kept if self.live_tree.exists(i)]
+        if still:
+            self.live_tree.selection_set(still)
+        self.render_output()
 
 
 # --- Output (JSON template + MQTT) -------------------------------------------
