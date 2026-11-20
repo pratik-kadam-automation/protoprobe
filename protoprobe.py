@@ -52,6 +52,7 @@ from commissioning_screen import CommissioningScreen
 from plc_reader import build_range_tags
 import plc_catalog
 import s7_address
+import signal_hints
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
@@ -448,6 +449,25 @@ def format_bits(area, bits, changed=()):
     return ", ".join(f"{area}{b}.{k}" + ("*" if (b, k) in changed else "") for b, k in bits)
 
 
+def hint_for_result(r):
+    """What a scan row might be good for (signal_hints.Hint), from how it behaved during the scan; None when there is nothing to say."""
+    if r.get("bit_area"):
+        if r.get("bits_series"):
+            return signal_hints.classify_bits(r["bits_series"])
+        if r.get("bits_on"):
+            return signal_hints.Hint("steady_on", "bit(s) on the whole time: a permanent condition (power ok, guard closed ...)")
+        return signal_hints.Hint("idle", "no bit was on")
+    return signal_hints.classify_word(r["values"]) if r.get("values") else None
+
+
+def hint_text(hint):
+    if hint is None:
+        return ""
+    tags = [f"OEE: {hint.oee}" if hint.oee else "", f"predictive: {hint.predictive}" if hint.predictive else ""]
+    tags = [t for t in tags if t]
+    return hint.text + (f"   [{'; '.join(tags)}]" if tags else "")
+
+
 def bits_summary(area, bits_on, bits_changed):
     """Text for the results table: the bits that are on (* = changed during the scan) and the bits that changed but are off in the last
     snapshot. 'no bits on' when there is nothing to show."""
@@ -688,7 +708,7 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
             continue
         changed = len(set(vals_present)) > 1
         results.append({
-            "name": name, "tag": tag, "changed": changed, "latest": vals_present[-1],
+            "name": name, "tag": tag, "changed": changed, "latest": vals_present[-1], "values": list(vals_present),
             "raw_value": _raw_word_from_int16(vals_present[-1]),
             "type_label": type_label_for_tag(protocol, tag),
         })
@@ -703,6 +723,8 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
             results[-1]["bit_area"] = is_bit_packed_area(protocol, tag)
             results[-1]["bits_on"] = sorted(now)
             results[-1]["bits_changed"] = sorted(ever_changed)
+            results[-1]["bits_series"] = {bt: [1 if bt in set(s7_word_bits(tag["area"], tag["start_byte"], rw)) else 0 for rw in raws]
+                                          for bt in ever_changed}
 
     # 32-bit pairing: adjacent entries in `tags` are adjacent addresses
     # by construction (build_range_tags steps by 1 device number or 2
@@ -2976,13 +2998,25 @@ class ScanResultsScreen(ttk.Frame):
         self.filter_frame = ttk.Frame(self)
         self.filter_frame.pack(fill="x", padx=20, pady=(4, 4))
 
-        columns = ("connection", "job", "type", "address", "changed", "raw", "latest", "float_guess", "match")
+        use_frame = ttk.Frame(self)
+        use_frame.pack(fill="x", padx=20, pady=(0, 4))
+        ttk.Label(use_frame, text="Show:").pack(side="left", padx=(0, 8))
+        self.hint_filter = tk.StringVar(value="All results")
+        hint_box = ttk.Combobox(use_frame, textvariable=self.hint_filter, state="readonly", width=34,
+                                values=["All results", "OEE candidates (run state, counts, settings)", "Predictive candidates (trends, usage counts)"])
+        hint_box.pack(side="left")
+        hint_box.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        ttk.Label(use_frame, text="Suggestions are guesses from how a value moved during the scan: confirm them by running the machine.",
+                  foreground="gray").pack(side="left", padx=12)
+
+        columns = ("connection", "job", "type", "address", "changed", "raw", "latest", "float_guess", "hint", "match")
         self.tree = ttk.Treeview(self, columns=columns, show="headings", height=18)
         headings = [
             ("connection", "Connection", 110), ("job", "Scan job", 120), ("type", "Type", 50),
             ("address", "Address", 100), ("changed", "Changed?", 70),
             ("raw", "Raw value", 120), ("latest", "As int16", 80),
-            ("float_guess", "Possible float32 / bits on (* = changed)", 230), ("match", "Search match", 160),
+            ("float_guess", "Possible float32 / bits on (* = changed)", 230),
+            ("hint", "Suggested use (a guess from this scan: confirm it on the machine)", 420), ("match", "Search match", 160),
         ]
         for col, label, w in headings:
             self.tree.heading(col, text=label)
@@ -3071,6 +3105,10 @@ class ScanResultsScreen(ttk.Frame):
             match_text = self._search_match_text(r)
             if self.search_target is not None and match_text is None:
                 continue  # active search and this row doesn't match anything -- hide it
+            hint = hint_for_result(r)
+            wanted = {"O": "oee", "P": "predictive"}.get(self.hint_filter.get()[:1], "all")
+            if not signal_hints.matches(hint, wanted):
+                continue
 
             iid = f"{r['conn_name']}::{r['job_label']}::{r['name']}::{i}"
             float_guess = r.get("float32_guess")
@@ -3084,7 +3122,7 @@ class ScanResultsScreen(ttk.Frame):
             self.tree.insert("", "end", iid=iid, values=(
                 r["conn_name"], r["job_label"], type_label, r["name"],
                 "Yes" if r["changed"] else "No", raw_text, r["latest"], float_text,
-                match_text or "",
+                hint_text(hint), match_text or "",
             ))
             shown += 1
 
@@ -3487,6 +3525,8 @@ class App(tk.Tk):
                             "type_label": r.get("type_label", "?"),
                             "candidates_32bit": r.get("candidates_32bit", {}),
                             "bit_area": r.get("bit_area", False),
+                            "values": r.get("values", []),
+                            "bits_series": r.get("bits_series", {}),
                             "bits_on": r.get("bits_on", []),
                             "bits_changed": r.get("bits_changed", []),
                         })
