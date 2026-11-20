@@ -337,9 +337,11 @@ def read_xlsx_rows(data):
     if "xl/sharedStrings.xml" in z.namelist():
         for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("m:si", _NS):
             shared.append("".join(t.text or "" for t in si.iter("{%s}t" % _NS["m"])))
-    sheets = sorted(n for n in z.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml$", n))
+    # Any worksheet file name: Excel writes sheet1.xml, other tools write Sheet1.xml or a name of their own.
+    sheets = sorted((n for n in z.namelist() if re.match(r"xl/worksheets/[^/]+\.xml$", n, re.I)),
+                    key=lambda n: [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", n)])
     if not sheets:
-        raise ValueError("no worksheet found in the file")
+        raise ValueError("no worksheet found in the file (parts in it: " + ", ".join(sorted(z.namelist())[:12]) + ")")
     rows = []
     for row in ET.fromstring(z.read(sheets[0])).iter("{%s}row" % _NS["m"]):
         cells = {}
