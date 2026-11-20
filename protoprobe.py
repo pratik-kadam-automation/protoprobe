@@ -1507,11 +1507,11 @@ class ConnectionsScreen(ttk.Frame):
         self.refresh()
         self.app.refresh_dashboard()
 
-    def _s7_guided_dialog(self, parent, conn, on_saved, quick=False):
+    def _s7_guided_dialog(self, parent, conn, on_saved, quick=False, existing=None):
         """Add one Siemens tag the way the gateway's own dialog does it: pick the register type, enter the address, see the address spelled out,
         choose the data type, press Test read to see the value right away."""
         win = tk.Toplevel(parent)
-        win.title(f"Read a value -- {conn.name}" if quick else "Add Siemens tag")
+        win.title(f"Read a value -- {conn.name}" if quick else "Edit Siemens tag" if existing else "Add Siemens tag")
         win.geometry("1140x700" if quick else "640x640")
         if not quick:
             win.grab_set()
@@ -1604,6 +1604,25 @@ class ConnectionsScreen(ttk.Frame):
         for var in (choice, db_var, byte_var, bit_var, type_var):
             var.trace_add("write", update)
         update()
+        def fill_from(tag):
+            """Put an existing tag's register, address, type and scaling into the form."""
+            old_type = tag.get("data_type", "int16")
+            old_width = "bit" if old_type == "bit" else "dword" if ("32" in old_type) else "word"
+            name_var.set(tag["name"])
+            db_var.set(str(tag.get("db_number") or 1))
+            byte_var.set(str(tag.get("start_byte", 0)))
+            bit_var.set(str(tag.get("bit_offset", 0)))
+            choice.set(f"{tag.get('area', 'M')}|{old_width}")
+            if old_type not in s7_address.data_types_for(old_width):
+                type_cb.configure(values=s7_address.data_types_for(old_width) + [old_type])
+            type_var.set(old_type)
+            scale_var.set(str(tag.get("multiplier", 1.0)))
+            offset_var.set(str(tag.get("offset", 0.0)))
+            unit_var.set(str(tag.get("unit", "")))
+            update()
+
+        if existing:                                  # editing: start from what the tag is now
+            fill_from(existing)
 
         test_queue = queue.Queue()
         keep_var = tk.BooleanVar(value=False)
@@ -1657,6 +1676,16 @@ class ConnectionsScreen(ttk.Frame):
             except ValueError as exc:
                 messagebox.showerror("Cannot add", str(exc))
                 return
+            if existing:
+                if any(t["name"] == tag["name"] and t is not existing for t in conn.tags):
+                    messagebox.showerror("Duplicate", f"Tag '{tag['name']}' already exists")
+                    return
+                conn.latest_values.pop(existing["name"], None)
+                existing.clear()
+                existing.update(tag)                  # the same dict: everything that holds this tag sees the change
+                on_saved()
+                win.destroy()
+                return
             if any(t["name"] == tag["name"] for t in conn.tags):
                 messagebox.showerror("Duplicate", f"Tag '{tag['name']}' already exists")
                 return
@@ -1700,6 +1729,37 @@ class ConnectionsScreen(ttk.Frame):
                 watch.insert("", "end", iid=tag["name"], tags=("grey",), values=(tag["name"], address, "", "--"))
                 watch_status.configure(text=f"{len(watched)} value(s) in the list.", foreground="gray")
                 name_var.set(f"Tag{len(conn.tags) + len(watched) + 1}")
+
+            def load_selected(*_):
+                sel = watch.selection()
+                if sel:
+                    fill_from(next(t for t in watched if t["name"] == sel[0]))
+                    watch_status.configure(text="Loaded into the form: change it, then press 'Update selected'.", foreground="gray")
+
+            def update_selected():
+                sel = watch.selection()
+                if not sel:
+                    watch_status.configure(text="Select a row in the list first (double-click loads it into the form).", foreground="#c62828")
+                    return
+                try:
+                    tag = build()
+                except ValueError as exc:
+                    watch_status.configure(text=str(exc), foreground="#c62828")
+                    return
+                area, width = current()
+                index = next(i for i, t in enumerate(watched) if t["name"] == sel[0])
+                if any(t["name"] == tag["name"] for i, t in enumerate(watched) if i != index):
+                    watch_status.configure(text=f"'{tag['name']}' is already in the list.", foreground="#c62828")
+                    return
+                tag["_address"] = s7_address.address_text(area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0)
+                watched[index] = tag
+                watch.delete(sel[0])
+                watch.insert("", index, iid=tag["name"], tags=("grey",), values=(tag["name"], tag["_address"], "", "--"))
+                watch.selection_set(tag["name"])
+                watch_status.configure(text=f"Updated: {tag['name']} is now {tag['_address']}.", foreground="gray")
+
+            watch.bind("<Double-1>", load_selected)
+            watch.bind("<Return>", load_selected)          # the same from the keyboard
 
             def remove_from_list():
                 for iid in watch.selection():
@@ -1753,6 +1813,7 @@ class ConnectionsScreen(ttk.Frame):
             row = ttk.Frame(side)
             row.pack(fill="x", pady=(8, 0))
             ttk.Button(row, text="Add to list", command=add_to_list).pack(side="left")
+            ttk.Button(row, text="Update selected", command=update_selected).pack(side="left", padx=(6, 0))
             ttk.Button(row, text="Remove selected", command=remove_from_list).pack(side="left", padx=6)
             ttk.Button(row, text="Read list now", command=read_list).pack(side="left")
             row2 = ttk.Frame(side)
@@ -1770,7 +1831,7 @@ class ConnectionsScreen(ttk.Frame):
             ttk.Button(buttons, text="Add as tag", command=save).pack(side="right", padx=4)
         else:
             ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right", padx=4)
-            ttk.Button(buttons, text="OK", command=save).pack(side="right", padx=4)
+            ttk.Button(buttons, text="Save" if existing else "OK", command=save).pack(side="right", padx=4)
         return win
 
     def open_tag_manager(self):
@@ -2660,7 +2721,7 @@ class LiveValuesScreen(ttk.Frame):
             self.live_tree.tag_configure(colour, foreground=hex_colour)
         self.live_tree.pack(fill="both", expand=True, padx=20, pady=8)
         self.live_tree.bind("<Double-1>", lambda e: self.edit_selected_tag())
-        ttk.Label(self, text="Double-click a row to change that tag's data type, scale, offset or unit (reading only: nothing is written to the PLC).",
+        ttk.Label(self, text="Double-click a row to change that tag's register, address, data type, scale or unit (reading only: nothing is written to the PLC).",
                   foreground="gray").pack(anchor="w", padx=20, pady=(0, 8))
 
     def edit_selected_tag(self):
@@ -2670,7 +2731,16 @@ class LiveValuesScreen(ttk.Frame):
         conn_name, tag_name = selected[0].split("::", 1)
         conn = self.app.connections.get(conn_name)
         tag = next((t for t in conn.tags if t["name"] == tag_name), None) if conn else None
-        return self.edit_tag_dialog(conn, tag) if tag else None
+        if not tag:
+            return None
+        if conn.protocol == "s7comm":
+            def saved():
+                self.app.restart_poller(conn)
+                self.refresh()
+                if "connections" in self.app.screens:
+                    self.app.screens["connections"].refresh()
+            return self.app.screens["connections"]._s7_guided_dialog(self, conn, saved, existing=tag)
+        return self.edit_tag_dialog(conn, tag)
 
     def edit_tag_dialog(self, conn, tag):
         """Change how a tag is READ (data type, scale, offset, unit) while it is being polled. Nothing is ever written to the PLC."""

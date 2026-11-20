@@ -292,3 +292,61 @@ class EditTagOnLiveValues(QuickRead):
         self.conn.thread.stop()
         old.join(timeout=3)
         self.assertFalse(old.is_alive())
+
+
+class FixAWrongAddress(QuickRead):
+    def test_md4_dint_becomes_the_run_bit_m0_1_in_place(self):
+        tag = {"name": "Run", "area": "M", "db_number": 0, "start_byte": 4, "data_type": "int32", "multiplier": 1.0, "offset": 0.0}
+        self.conn.tags = [tag]
+        self.conn.latest_values["Run"] = 123
+        restarted = []
+        self.app.restart_poller = lambda conn: restarted.append(conn.name) or True
+        pp.messagebox.showinfo = lambda *a, **k: None
+        live = self.app.screens["live_values"]
+        live.refresh()
+        live.live_tree.selection_set("c::Run")
+        win = live.edit_selected_tag()
+        self.app.update()
+        # it starts from what the tag is now
+        preview = next(w for w in walk(win) if w.winfo_class() == "TLabel" and "MD4" in str(w.cget("text")))
+        self.assertIn("MD4", str(preview.cget("text")))
+        next(w for w in walk(win) if w.winfo_class() == "TRadiobutton" and w.cget("text") == "M").invoke()      # M, bit
+        entries = [w for w in walk(win) if w.winfo_class() == "TEntry"]                                           # name, db, byte, bit ...
+        entries[2].delete(0, "end")
+        entries[2].insert(0, "0")
+        entries[3].delete(0, "end")
+        entries[3].insert(0, "1")
+        win.update()
+        next(w for w in walk(win) if w.winfo_class() == "TButton" and w.cget("text") == "Save").invoke()
+        same = self.conn.tags[0]
+        self.assertIs(same, tag)                                                   # edited in place, not replaced
+        self.assertEqual((tag["name"], tag["area"], tag["start_byte"], tag["bit_offset"], tag["data_type"]), ("Run", "M", 0, 1, "bit"))
+        self.assertNotIn("Run", self.conn.latest_values)
+        self.assertEqual(restarted, ["c"])
+
+
+class FixInTheWatchList(WatchList):
+    def test_double_click_loads_a_row_and_update_replaces_it(self):
+        self.open()
+        ents = [w for w in walk(self.win) if w.winfo_class() == "TEntry"]
+        ents[0].delete(0, "end")
+        ents[0].insert(0, "Run")
+        self.btn("MD").invoke()
+        ents[2].delete(0, "end")
+        ents[2].insert(0, "4")
+        self.btn("Add to list").invoke()
+        tree = self.tree()
+        self.assertEqual(tree.item("Run")["values"][1], "MD4")
+        self.assertEqual(ents[2].get(), "4")
+        tree.selection_set("Run")
+        tree.focus_set()
+        tree.event_generate("<Return>")                      # loads the selected row into the form (double-click does the same)
+        self.win.update()
+        self.btn("M").invoke()                                # now a bit in M
+        ents[2].delete(0, "end")
+        ents[2].insert(0, "0")
+        ents[3].delete(0, "end")
+        ents[3].insert(0, "1")
+        self.btn("Update selected").invoke()
+        self.assertEqual(tree.get_children(), ("Run",))
+        self.assertEqual(tree.item("Run")["values"][1], "M0.1")
