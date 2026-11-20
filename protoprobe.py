@@ -985,38 +985,87 @@ class PollerThread(threading.Thread):
         return {"interface": self.conn.interface, "tags": tags}
 
 
+TLS_CHOICES = [("auto", "Auto (best version both sides support)"), ("1.0", "TLS 1.0 (old, insecure)"), ("1.1", "TLS 1.1 (old, insecure)"),
+               ("1.2", "TLS 1.2"), ("1.3", "TLS 1.3")]
+MQTT_VERSIONS = [("3.1.1", "MQTT 3.1.1"), ("3.1", "MQTT 3.1")]
+QOS_CHOICES = [("0", "0 - at most once"), ("1", "1 - at least once"), ("2", "2 - exactly once")]
+
+
+def build_tls_context(tls_version="auto", ca_cert=None, client_cert=None, client_key=None, verify=True):
+    """The ssl context for an MQTT connection, set like the gateway's TLS page: a fixed version (1.0 to 1.3) or auto, the CA file, the
+    client certificate and key (mutual TLS), and whether the broker's certificate is checked. Reading TLS 1.0 / 1.1 needs an OpenSSL that
+    still allows them: it is asked for, but a modern system may refuse (the connect error then says so)."""
+    import ssl
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    versions = {"1.0": ssl.TLSVersion.TLSv1, "1.1": ssl.TLSVersion.TLSv1_1, "1.2": ssl.TLSVersion.TLSv1_2, "1.3": ssl.TLSVersion.TLSv1_3}
+    if tls_version in versions:
+        if tls_version in ("1.0", "1.1"):
+            try:
+                ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
+            except ssl.SSLError:
+                pass
+        ctx.minimum_version = ctx.maximum_version = versions[tls_version]
+    elif tls_version != "auto":
+        raise ValueError(f"unknown TLS version {tls_version!r}")
+    if verify:
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        if ca_cert:
+            ctx.load_verify_locations(cafile=ca_cert)
+        else:
+            ctx.load_default_certs()
+    else:                                              # for a test broker with its own certificate only: nothing proves who answers
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    if client_cert:
+        ctx.load_cert_chain(certfile=client_cert, keyfile=client_key or None)
+    return ctx
+
+
 class MQTTPublisher:
     def __init__(self):
         self.client = None
         self.connected = False
+        self.qos = 1
+        self.retain = False
+        self.last_error = ""
 
     def connect(self, host, port, client_id, username, password,
-                use_tls, ca_cert, client_cert, client_key):
+                use_tls, ca_cert, client_cert, client_key, tls_version="auto", verify=True,
+                qos=1, retain=False, keepalive=30, clean_session=True, mqtt_version="3.1.1"):
         import paho.mqtt.client as mqtt
 
-        self.client = mqtt.Client(client_id=client_id or f"gw-sim-{uuid.uuid4().hex[:6]}",
-                                   protocol=mqtt.MQTTv311)
+        self.qos, self.retain, self.last_error = int(qos), bool(retain), ""
+        protocol = mqtt.MQTTv31 if mqtt_version == "3.1" else mqtt.MQTTv311
+        # A test must never reuse a production client id (ADR-010): an empty id gets a random one.
+        cid = client_id or f"protoprobe-{uuid.uuid4().hex[:8]}"
+        kwargs = {"client_id": cid, "protocol": protocol, "clean_session": bool(clean_session)}
+        api = getattr(mqtt, "CallbackAPIVersion", None)
+        self.client = mqtt.Client(api.VERSION2, **kwargs) if api else mqtt.Client(**kwargs)
         if username:
             self.client.username_pw_set(username, password or "")
         if use_tls:
-            kwargs = {}
-            if ca_cert:
-                kwargs["ca_certs"] = ca_cert
-            if client_cert:
-                kwargs["certfile"] = client_cert
-            if client_key:
-                kwargs["keyfile"] = client_key
-            self.client.tls_set(**kwargs) if kwargs else self.client.tls_set()
+            try:
+                self.client.tls_set_context(build_tls_context(tls_version, ca_cert, client_cert, client_key, verify))
+            except Exception as exc:
+                self.last_error = f"TLS settings: {exc}"
+                return False
 
-        def on_connect(c, userdata, flags, rc):
-            self.connected = (rc == 0)
+        def on_connect(c, userdata, flags, rc, *extra):
+            self.connected = (getattr(rc, "value", rc) == 0)
+            if not self.connected:
+                self.last_error = f"the broker refused the connection ({rc})"
 
-        def on_disconnect(c, userdata, rc):
+        def on_disconnect(c, userdata, *args):
             self.connected = False
 
         self.client.on_connect = on_connect
         self.client.on_disconnect = on_disconnect
-        self.client.connect(host, port, keepalive=30)
+        try:
+            self.client.connect(host, port, keepalive=int(keepalive))
+        except Exception as exc:                       # includes ssl errors: wrong TLS version, certificate not trusted, refused port
+            self.last_error = str(exc)
+            return False
         self.client.loop_start()
 
         for _ in range(50):
@@ -1025,10 +1074,11 @@ class MQTTPublisher:
             time.sleep(0.1)
         return self.connected
 
-    def publish(self, topic, payload_dict, qos=1):
+    def publish(self, topic, payload_dict, qos=None, retain=None):
         if not self.client or not self.connected:
             return False
-        result = self.client.publish(topic, json.dumps(payload_dict), qos=qos)
+        result = self.client.publish(topic, json.dumps(payload_dict), qos=self.qos if qos is None else int(qos),
+                                     retain=self.retain if retain is None else bool(retain))
         result.wait_for_publish(timeout=5)
         return result.is_published()
 
@@ -3057,6 +3107,37 @@ class OutputScreen(ttk.Frame):
         self.mqtt_use_tls = tk.BooleanVar(value=True)
         ttk.Checkbutton(mrow2, text="Use TLS", variable=self.mqtt_use_tls).pack(side="left", padx=12)
 
+        mrow3 = ttk.Frame(mqtt_frame)
+        mrow3.pack(fill="x", padx=4, pady=2)
+        ttk.Label(mrow3, text="Client ID (empty = a random one)").pack(side="left")
+        self.mqtt_client_id = ttk.Entry(mrow3, width=22)
+        self.mqtt_client_id.pack(side="left", padx=(4, 12))
+        ttk.Label(mrow3, text="QoS").pack(side="left")
+        self.mqtt_qos = ttk.Combobox(mrow3, state="readonly", width=18, values=[l for _, l in QOS_CHOICES])
+        self.mqtt_qos.current(1)
+        self.mqtt_qos.pack(side="left", padx=(4, 12))
+        self.mqtt_retain = tk.BooleanVar(value=False)
+        ttk.Checkbutton(mrow3, text="Retain", variable=self.mqtt_retain).pack(side="left", padx=6)
+        self.mqtt_clean = tk.BooleanVar(value=True)
+        ttk.Checkbutton(mrow3, text="Clean session", variable=self.mqtt_clean).pack(side="left", padx=6)
+
+        mrow4 = ttk.Frame(mqtt_frame)
+        mrow4.pack(fill="x", padx=4, pady=2)
+        self.mqtt_keepalive = self._labeled_entry(mrow4, "Keep-alive (s)", "30")
+        self.mqtt_keepalive.configure(width=6)
+        ttk.Label(mrow4, text="MQTT version").pack(side="left")
+        self.mqtt_version = ttk.Combobox(mrow4, state="readonly", width=12, values=[l for _, l in MQTT_VERSIONS])
+        self.mqtt_version.current(0)
+        self.mqtt_version.pack(side="left", padx=(4, 12))
+        ttk.Label(mrow4, text="TLS version").pack(side="left")
+        self.mqtt_tls = ttk.Combobox(mrow4, state="readonly", width=34, values=[l for _, l in TLS_CHOICES])
+        self.mqtt_tls.current(0)
+        self.mqtt_tls.pack(side="left", padx=(4, 12))
+        self.mqtt_verify = tk.BooleanVar(value=True)
+        ttk.Checkbutton(mqtt_frame, text="Verify the broker's certificate (recommended)", variable=self.mqtt_verify).pack(anchor="w", padx=8)
+
+        ttk.Label(mqtt_frame, text="TLS 1.0 / 1.1 are old and insecure; a modern system may refuse them. Switching the certificate check off proves nothing about "
+                                   "who answers: use it only for a test broker.", foreground="gray", wraplength=1000, justify="left").pack(anchor="w", padx=4)
         ttk.Label(mqtt_frame, text="CA cert (required for AWS IoT Core: AmazonRootCA1.pem)").pack(anchor="w", padx=4)
         self.mqtt_ca_cert = self._file_picker_row(mqtt_frame)
         ttk.Label(mqtt_frame, text="Client cert (mTLS device certificate)").pack(anchor="w", padx=4)
@@ -3072,7 +3153,7 @@ class OutputScreen(ttk.Frame):
         self.mqtt_disconnect_btn.pack(side="left", padx=4)
         self.mqtt_publish_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(mctrl, text="Actually publish each merge cycle", variable=self.mqtt_publish_var).pack(side="left", padx=12)
-        self.mqtt_status_label = ttk.Label(mctrl, text="Status: not connected", foreground="gray")
+        self.mqtt_status_label = ttk.Label(mctrl, text="Status: not connected", foreground="gray", wraplength=480, justify="right")
         self.mqtt_status_label.pack(side="right", padx=4)
 
         log_frame = ttk.LabelFrame(root, text="JSON send log")
@@ -3182,20 +3263,30 @@ class OutputScreen(ttk.Frame):
         self.mqtt_status_label.configure(text="Status: connecting...", foreground="orange")
         self.update_idletasks()
 
+        try:
+            keepalive = int(self.mqtt_keepalive.get().strip())
+        except ValueError:
+            messagebox.showerror("Invalid keep-alive", "Keep-alive must be a whole number of seconds")
+            return
+        pick = lambda box, choices: choices[box.current()][0] if box.current() >= 0 else choices[0][0]
         ok = self.app.mqtt.connect(
-            host=host, port=port, client_id=self.device_id_entry.get().strip(),
+            host=host, port=port, client_id=self.mqtt_client_id.get().strip(),
             username=self.mqtt_username.get().strip(), password=self.mqtt_password.get(),
             use_tls=self.mqtt_use_tls.get(),
             ca_cert=self.mqtt_ca_cert.get().strip() or None,
             client_cert=self.mqtt_client_cert.get().strip() or None,
             client_key=self.mqtt_client_key.get().strip() or None,
+            tls_version=pick(self.mqtt_tls, TLS_CHOICES), verify=self.mqtt_verify.get(),
+            qos=pick(self.mqtt_qos, QOS_CHOICES), retain=self.mqtt_retain.get(), keepalive=keepalive,
+            clean_session=self.mqtt_clean.get(), mqtt_version=pick(self.mqtt_version, MQTT_VERSIONS),
         )
         if ok:
             self.mqtt_status_label.configure(text="Status: connected", foreground="green")
             self.mqtt_connect_btn.configure(state="disabled")
             self.mqtt_disconnect_btn.configure(state="normal")
         else:
-            self.mqtt_status_label.configure(text="Status: connect failed", foreground="red")
+            self.mqtt_status_label.configure(text="Status: connect failed" + (f" -- {self.app.mqtt.last_error}" if self.app.mqtt.last_error else ""),
+                                             foreground="red")
 
     def mqtt_disconnect(self):
         self.app.mqtt.disconnect()
