@@ -402,6 +402,19 @@ def format_bits(area, bits, changed=()):
     return ", ".join(f"{area}{b}.{k}" + ("*" if (b, k) in changed else "") for b, k in bits)
 
 
+def bits_summary(area, bits_on, bits_changed):
+    """Text for the results table: the bits that are on (* = changed during the scan) and the bits that changed but are off in the last
+    snapshot. 'no bits on' when there is nothing to show."""
+    changed = set(bits_changed)
+    parts = []
+    if bits_on:
+        parts.append("on: " + format_bits(area, bits_on, changed))
+    gone = sorted(changed - set(bits_on))
+    if gone:
+        parts.append("changed, now off: " + ", ".join(f"{area}{b}.{k}*" for b, k in gone))
+    return "; ".join(parts) if parts else "no bits on"
+
+
 def _raw_word_from_int16(decoded_value: int) -> int:
     """Reverses BaseDriver's int16 decode -- gets back the original raw
     16-bit register content from the signed value the scan stored."""
@@ -630,14 +643,15 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
             "raw_value": _raw_word_from_int16(vals_present[-1]),
             "type_label": type_label_for_tag(protocol, tag),
         })
-        if is_bit_packed_area(protocol, tag):
+        if is_bit_packed_area(protocol, tag) or (protocol == "s7comm" and tag.get("area") == "M"):
+            # I/Q: only bits. M holds flags too (clock memory, status bits) next to words and counters, so M rows get the bits as well as the word.
             raws = [_raw_word_from_int16(v) for v in vals_present]
             all_bits = set()
             for rw in raws:
                 all_bits.update(s7_word_bits(tag["area"], tag["start_byte"], rw))
             now = set(s7_word_bits(tag["area"], tag["start_byte"], raws[-1]))
             ever_changed = {bt for bt in all_bits if len({bt in set(s7_word_bits(tag["area"], tag["start_byte"], rw)) for rw in raws}) > 1}
-            results[-1]["bit_area"] = True
+            results[-1]["bit_area"] = is_bit_packed_area(protocol, tag)
             results[-1]["bits_on"] = sorted(now)
             results[-1]["bits_changed"] = sorted(ever_changed)
 
@@ -2555,8 +2569,9 @@ class ScanResultsScreen(ttk.Frame):
             float_guess = r.get("float32_guess")
             float_text = f"{float_guess} (with {r.get('float32_pair_with')})" if float_guess is not None else "--"
             if r.get("bit_area"):
-                area = r["tag"]["area"]
-                float_text = ("bits on: " + format_bits(area, r["bits_on"], r["bits_changed"])) if r["bits_on"] or r["bits_changed"] else "no bits on"
+                float_text = "bits " + bits_summary(r["tag"]["area"], r["bits_on"], r["bits_changed"])
+            elif r["tag"].get("area") == "M" and (r.get("bits_on") or r.get("bits_changed")):
+                float_text = f"{float_text}  |  bits " + bits_summary("M", r["bits_on"], r["bits_changed"])
             raw = r.get("raw_value")
             raw_text = f"{raw} (0x{raw:04X})" if raw is not None else "--"
             self.tree.insert("", "end", iid=iid, values=(

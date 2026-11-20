@@ -22,6 +22,19 @@ class BitAreaTests(unittest.TestCase):
 
 
 
+class BitsSummary(unittest.TestCase):
+    def test_on_and_changed(self):
+        self.assertEqual(pp.bits_summary("Q", [(0, 5)], [(0, 5)]), "on: Q0.5*")
+
+    def test_changed_but_off_now_is_still_shown(self):
+        # the I0 row of the owner's scan: Changed = Yes, nothing on in the last snapshot
+        self.assertEqual(pp.bits_summary("I", [], [(0, 1)]), "changed, now off: I0.1*")
+
+    def test_both_and_nothing(self):
+        self.assertEqual(pp.bits_summary("M", [(0, 3)], [(0, 3), (0, 4)]), "on: M0.3*; changed, now off: M0.4*")
+        self.assertEqual(pp.bits_summary("I", [], []), "no bits on")
+
+
 class ScanIntegration(unittest.TestCase):
     def test_input_area_rows_have_bits_and_no_float_guess(self):
         import test_quiet_s7_scan as q
@@ -48,3 +61,13 @@ class ProgressMessages(unittest.TestCase):
         self.assertTrue(fractions)
         self.assertEqual(fractions, sorted(fractions))
         self.assertAlmostEqual(fractions[-1], 1.0, places=6)
+
+
+class MarkerRows(unittest.TestCase):
+    def test_marker_rows_get_bits_but_stay_words(self):
+        import test_quiet_s7_scan as q
+        msgs, _ = q.scan("M", 0, 20, snapshots=2)
+        results = [d for k, d in msgs if k == "results"][0][2]
+        m4 = [r for r in results if r["name"] == "M4"][0]
+        self.assertFalse(m4["bit_area"])                   # still a word: Add selected adds a word tag
+        self.assertEqual(m4["bits_on"], [(4, 2)])          # but the flags in it are listed
