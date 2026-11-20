@@ -1,6 +1,6 @@
 # CLAUDE.md: read this first (ProtoProbe)
 
-Rules and state for any Claude session or person working in this repo. Keep it current in the same pull request as any change (see "Keep this file true").
+Rules and state for anyone working in this repo. Keep it current in the same pull request as any change (see "Keep this file true").
 
 ## What this is
 ProtoProbe: a Windows desktop tool (Python, Tkinter) for industrial protocol diagnostics and for **commissioning a PLC on site**: it asks a few questions, reads the PLC,
