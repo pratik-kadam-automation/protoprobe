@@ -4,3 +4,4 @@ paho-mqtt==2.2.0
 sv-ttk==2.6.1
 python-snap7==3.3.1
 bacpypes3==0.0.110
+cryptography>=42
