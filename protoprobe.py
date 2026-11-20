@@ -55,6 +55,7 @@ import s7_address
 import signal_hints
 import candidates
 import workspace
+import arpscan
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
@@ -3412,12 +3413,15 @@ class NetworkToolsScreen(ttk.Frame):
         self.ip_progress_label = ttk.Label(row, text="", foreground="gray")
         self.ip_progress_label.pack(side="left", padx=12)
 
-        self.ip_tree = ttk.Treeview(ip_frame, columns=("ip", "status"), show="headings", height=8)
-        self.ip_tree.heading("ip", text="IP address")
-        self.ip_tree.heading("status", text="Status")
-        self.ip_tree.column("ip", width=160, anchor="center")
-        self.ip_tree.column("status", width=160, anchor="center")
+        self.ip_tree = ttk.Treeview(ip_frame, columns=("ip", "status", "mac", "vendor", "hint"), show="headings", height=8)
+        for col, text, width, anchor in (("ip", "IP address", 120, "center"), ("status", "Status", 190, "center"), ("mac", "MAC address", 130, "center"),
+                                         ("vendor", "Vendor (IEEE list)", 180, "w"), ("hint", "What to try (a hint, not a fact)", 380, "w")):
+            self.ip_tree.heading(col, text=text)
+            self.ip_tree.column(col, width=width, anchor=anchor)
         self.ip_tree.pack(fill="both", expand=True, padx=8, pady=8)
+        self.ip_note = ttk.Label(ip_frame, text="After the sweep the PC's ARP table is read too: a device that ignores ping still answers ARP, so it shows as 'ARP only'. "
+                                 "Needs no administrator rights.", foreground="gray", wraplength=900, justify="left")
+        self.ip_note.pack(anchor="w", padx=8, pady=(0, 6))
 
         port_frame = ttk.LabelFrame(self, text="Port scanner")
         port_frame.pack(fill="both", expand=True, padx=20, pady=6)
@@ -3461,6 +3465,7 @@ class NetworkToolsScreen(ttk.Frame):
         self._ip_scanning = True
         self._ip_done = 0
         self._ip_found = 0
+        self._arp_extra = 0
         self.ip_scan_btn.configure(state="disabled")
         total = end - start + 1
         self.ip_progress_label.configure(text=f"Scanning 0/{total}...")
@@ -3476,10 +3481,15 @@ class NetworkToolsScreen(ttk.Frame):
             ip = f"{base}.{host_num}"
             return ip, ping_once(ip)
 
+        pinged = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
             futures = [pool.submit(ping_host, n) for n in range(start, end + 1)]
             for future in concurrent.futures.as_completed(futures):
-                self._ip_queue.put(future.result())
+                result = future.result()
+                pinged[result[0]] = result[1]
+                self._ip_queue.put(result)
+        # The pings filled this PC's ARP table: read it (hidden, read-only) and hand it over with the ping results.
+        self._ip_queue.put({"arp": arpscan.read_arp_table(hidden_kwargs=hidden_subprocess_kwargs()), "pinged": pinged, "prefix": f"{base}."})
         self._ip_queue.put(None)  # sentinel: scan complete
 
     def _pump_ip_queue(self, total):
@@ -3489,18 +3499,44 @@ class NetworkToolsScreen(ttk.Frame):
                 if item is None:
                     self._ip_scanning = False
                     self.ip_scan_btn.configure(state="normal")
-                    self.ip_progress_label.configure(text=f"Done -- {total} addresses checked, {self._ip_found} reachable")
+                    extra = getattr(self, "_arp_extra", 0)
+                    self.ip_progress_label.configure(text=f"Done -- {total} addresses checked, {self._ip_found} answered ping" + (f", {extra} more found by ARP" if extra else ""))
                     return
+                if isinstance(item, dict):
+                    self._show_arp(item)
+                    continue
                 ip, reachable = item
                 self._ip_done += 1
                 if reachable:
                     self._ip_found += 1
-                    self.ip_tree.insert("", "end", values=(ip, "Reachable"))
+                    self.ip_tree.insert("", "end", values=(ip, "Answers ping", "", "", ""))
         except queue.Empty:
             pass
         if self._ip_scanning:
             self.ip_progress_label.configure(text=f"Scanning {self._ip_done}/{total}... {self._ip_found} reachable so far")
             self.after(150, lambda: self._pump_ip_queue(total))
+
+    def _oui(self):
+        """The IEEE vendor list, loaded once from the first oui.csv found (next to the workspace, then next to the program); {} when there is none."""
+        if not hasattr(self, "_oui_table"):
+            self._oui_table = {}
+            for path in arpscan.default_oui_paths(os.path.dirname(workspace.default_path())):
+                if os.path.exists(path):
+                    self._oui_table = arpscan.load_oui(path)
+                    break
+        return self._oui_table
+
+    def _show_arp(self, item):
+        """Replace the ping-only rows with the joined table: ping answers + ARP table + vendor."""
+        oui = self._oui()
+        rows = arpscan.merge(item["pinged"], item["arp"], oui, item["prefix"])
+        self.ip_tree.delete(*self.ip_tree.get_children())
+        for r in rows:
+            self.ip_tree.insert("", "end", values=(r["ip"], r["status"], r["mac"], r["vendor"], r["hint"]))
+        self._arp_extra = sum(1 for r in rows if r["status"].startswith("ARP only"))
+        if not oui:
+            self.ip_note.configure(text="Vendor names are missing: put the IEEE list (oui.csv, from the IEEE Registration Authority) in "
+                                   f"{os.path.dirname(workspace.default_path())} . Until then the vendor column says '(no vendor list)'.")
 
     def start_port_scan(self):
         if self._port_scanning:
