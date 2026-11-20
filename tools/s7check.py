@@ -50,8 +50,8 @@ def main():
         print("DB1..DB60 grouped by the PLC's answer:")
         for answer, dbs in groups.items():
             print(f"  {answer}: DB {dbs if len(dbs) < 12 else str(dbs[:3]) + ' ... ' + str(dbs[-2:]) + ' (' + str(len(dbs)) + ' DBs)'}")
-        print("'Object does not exist' = no such DB. A different error for a DB you know exists = the DB is there but absolute reads are refused "
-              "(optimized block access, or protection).")
+        print("'Object does not exist' = no such DB. A different error for a DB you know exists = the DB is there but the read is refused "
+              "(the DB is empty = size 0, or optimized block access, or protection).")
         return 0
     print("Reads (2 bytes each):")
     ok = [
@@ -66,7 +66,8 @@ def main():
         print("Connected but EVERY read failed: usually 'Permit access with PUT/GET' is off (CPU properties > Protection & Security > Connection mechanisms), "
               "or the CPU access level needs 'Full access (no protection)'. Download the change to the CPU.")
     elif not ok[3]:
-        print("I/Q/M work but the DB does not: wrong DB number, or the DB has 'Optimized block access' on.")
+        print("I/Q/M work but the DB does not: wrong DB number, an EMPTY DB (no variables = size 0, so bytes 0-1 do not exist), "
+              "or the DB has 'Optimized block access' on.")
     return 0
 
 

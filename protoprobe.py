@@ -350,7 +350,7 @@ def discovery_status(kind, data):
         names = ", ".join(f"DB{d}" for d, _m in refused[:8]) + (" ..." if len(refused) > 8 else "")
         reason = refused[0][1]
         return (f"Done -- 0 readable. {names} {'exists' if len(refused) == 1 else 'exist'} but refuse{'s' if len(refused) == 1 else ''} the read ({reason}): "
-                f"most likely 'Optimized block access' is still on for it, or the CPU's protection blocks it. "
+                f"most likely the DB has no variables yet (size 0), or 'Optimized block access' is on for it, or the CPU's protection blocks it. "
                 f"The other {len(missing)} probed DB(s) do not exist."), "red"
     counts = {}
     for _db, msg in errs:
