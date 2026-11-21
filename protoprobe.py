@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.3.5"
+APP_VERSION = "0.3.6"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -99,7 +99,7 @@ INTERFACE_FIELDS = {
     "modbus_rtu": [("port", "COM3"), ("baudrate", "9600"), ("parity", "N"),
                    ("stopbits", "1"), ("bytesize", "8")],
     "s7comm": [("ip", "192.168.1.50"), ("rack", "0"), ("slot", "1")],
-    "mc_protocol_3e": [("ip", "192.168.3.250"), ("port", "5010")],
+    "mc_protocol_3e": [("ip", "192.168.3.250"), ("port", "5010"), ("transport", "tcp")],
     "opcua": [("endpoint", "opc.tcp://192.168.1.70:4840")],
     "bacnet_ip": [("local_ip", "192.168.1.10"), ("device_instance", "260001"), ("device_ip", "192.168.1.20"),
                   ("remote_device_instance", "0"), ("device_port", "47808")],
@@ -341,7 +341,7 @@ def explain_exception(exc, protocol=None, ip=None, adapters=None):
     text = str(exc).strip()
     winerror = getattr(exc, "winerror", None)
     mc_hint = (" For a Mitsubishi Q series the port is the one set under 'Open settings' in GX Works2 (GX Works shows it in HEX: 1388 = 5000); "
-               "scan 5000-5020 under Network tools > Port scanner.") if protocol == "mc_protocol_3e" else ""
+               "scan 5000-5020 under Network tools > Port scanner. If Open settings says UDP, set the connection's transport to udp.") if protocol == "mc_protocol_3e" else ""
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or winerror == 10060:
         return ("no answer from the PLC (timeout). Usual causes: a wrong IP or port, this PC is in another subnet, a firewall, the cable, "
                 "or the PLC has no communication port open on this port." + mc_hint + _net_hint(ip, adapters))
@@ -1590,6 +1590,11 @@ class ConnectionsScreen(ttk.Frame):
                 return
             protocol_key = label_to_key[protocol_cb.get()]
             interface = {k: coerce(e.get().strip()) for k, e in field_entries.items()}
+            if "transport" in interface:
+                interface["transport"] = str(interface["transport"]).strip().lower()
+                if interface["transport"] not in ("tcp", "udp"):
+                    messagebox.showerror("Invalid", "transport must be tcp or udp (the one chosen under Open settings in GX Works2)")
+                    return
             try:
                 poll = float(poll_var.get())
                 if not workspace.POLL_MIN_S <= poll <= workspace.POLL_MAX_S:
