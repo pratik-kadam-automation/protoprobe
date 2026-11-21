@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.3.4"
+APP_VERSION = "0.3.5"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -316,7 +316,7 @@ def read_tags_once(conn, tags, driver_factory=None):
     try:
         values = asyncio.run(run())
     except Exception as exc:
-        reason = explain_exception(exc, conn.protocol)
+        reason = explain_exception(exc, conn.protocol, ip=conn.interface.get("ip"))
         return {t["name"]: (None, reason) for t in tags}
     finally:
         for lg in loggers:
@@ -325,7 +325,18 @@ def read_tags_once(conn, tags, driver_factory=None):
     return {t["name"]: ((values[t["name"]], None) if t["name"] in values else (None, collector.errors.get(t["name"]) or fallback)) for t in tags}
 
 
-def explain_exception(exc, protocol=None):
+def _net_hint(ip, adapters=None):
+    """The subnet hint for a PLC address, "" if there is no address or this PC's addresses cannot be read."""
+    if not ip:
+        return ""
+    import netcheck
+    if adapters is None:
+        adapters = netcheck.local_adapters(hidden_kwargs=hidden_subprocess_kwargs())
+    hint = netcheck.network_hint(ip, adapters)
+    return (" " + hint) if hint else ""
+
+
+def explain_exception(exc, protocol=None, ip=None, adapters=None):
     """An exception in plain words, never an empty text. A TimeoutError has NO text of its own, so a failed read used to show only "failed:" or "TimeoutError"."""
     text = str(exc).strip()
     winerror = getattr(exc, "winerror", None)
@@ -333,11 +344,11 @@ def explain_exception(exc, protocol=None):
                "scan 5000-5020 under Network tools > Port scanner.") if protocol == "mc_protocol_3e" else ""
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or winerror == 10060:
         return ("no answer from the PLC (timeout). Usual causes: a wrong IP or port, this PC is in another subnet, a firewall, the cable, "
-                "or the PLC has no communication port open on this port." + mc_hint)
+                "or the PLC has no communication port open on this port." + mc_hint + _net_hint(ip, adapters))
     if isinstance(exc, ConnectionRefusedError) or winerror == 10061:
         return "connection refused: the PLC answered but nothing listens on that port. Wrong port?" + mc_hint
     if winerror in (10051, 10065) or getattr(exc, "errno", None) in (101, 113):
-        return "the PLC's address cannot be reached from this PC: check the IP and that this PC is in the same subnet (or has a route)."
+        return "the PLC's address cannot be reached from this PC: check the IP and that this PC is in the same subnet (or has a route)." + _net_hint(ip, adapters)
     if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)):
         return "the PLC closed the connection. " + (text or "") + mc_hint
     return text or exc.__class__.__name__
@@ -410,7 +421,7 @@ def run_db_discovery(conn, max_db, out_queue):
     try:
         dbs = discover_db_numbers_sync(conn, max_db, out_queue, errs)
     except Exception as exc:
-        out_queue.put(("db_discovery_error", explain_exception(exc, "s7comm")))
+        out_queue.put(("db_discovery_error", explain_exception(exc, "s7comm", ip=conn.interface.get("ip"))))
         return
     out_queue.put(("db_discovery_done", (dbs, errs)))
 
@@ -725,7 +736,7 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
     try:
         snapshots = asyncio.run(run_scan())
     except Exception as e:
-        out_queue.put(("status", f"[{job_label}] failed: {explain_exception(e, protocol)}"))
+        out_queue.put(("status", f"[{job_label}] failed: {explain_exception(e, protocol, ip=conn.interface.get('ip'))}"))
         return
     finally:
         for lg in loggers:
@@ -825,7 +836,7 @@ def run_full_plc_scan_job(conn, protocol, options, num_snapshots, delay_s, out_q
                 db_list = discover_db_numbers_sync(conn, options.get("max_db_probe", 50), out_queue)
             except Exception as e:
                 db_list = []
-                out_queue.put(("status", f"DB discovery failed: {explain_exception(e, 's7comm')}"))
+                out_queue.put(("status", f"DB discovery failed: {explain_exception(e, 's7comm', ip=conn.interface.get('ip'))}"))
             if not db_list:
                 out_queue.put(("status", "No DBs found to scan"))
             for db in db_list:
@@ -955,7 +966,7 @@ class PollerThread(threading.Thread):
             await driver.connect()
             self.out_queue.put(("conn_status", (self.conn.name, "connected")))
         except Exception as e:
-            self.out_queue.put(("conn_status", (self.conn.name, f"error: {explain_exception(e, self.conn.protocol)}")))
+            self.out_queue.put(("conn_status", (self.conn.name, f"error: {explain_exception(e, self.conn.protocol, ip=self.conn.interface.get('ip'))}")))
             return
 
         while not self._stop_event.is_set():
@@ -977,7 +988,7 @@ class PollerThread(threading.Thread):
                 self.out_queue.put(("conn_status", (self.conn.name, "connected")))
             except Exception as e:
                 errors += 1
-                self.out_queue.put(("conn_status", (self.conn.name, f"error: {explain_exception(e, self.conn.protocol)}")))
+                self.out_queue.put(("conn_status", (self.conn.name, f"error: {explain_exception(e, self.conn.protocol, ip=self.conn.interface.get('ip'))}")))
 
             elapsed = time.monotonic() - cycle_start
             wait_left = max(0, self.interval_s - elapsed)
