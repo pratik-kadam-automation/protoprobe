@@ -123,7 +123,8 @@ class Live(unittest.TestCase):
         s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
         with self.assertRaises(ms.ModbusError) as cm:
             ms.read("127.0.0.1", port, 1, 3, 0, 1)
-        self.assertIn("refused", str(cm.exception))
+        # Linux says "refused" at once; Windows keeps retrying the connect and runs into the timeout first: both are plain-words answers
+        self.assertTrue("refused" in str(cm.exception) or "no answer" in str(cm.exception), str(cm.exception))
 
     def test_unit_sweep_finds_the_one_that_answers(self):
         found = ms.sweep_units("127.0.0.1", self.dev.port, range(0, 5), timeout=0.4)

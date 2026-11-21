@@ -339,8 +339,8 @@ class FixInTheWatchList(WatchList):
         self.assertEqual(tree.item("Run")["values"][1], "MD4")
         self.assertEqual(ents[2].get(), "4")
         tree.selection_set("Run")
-        tree.focus_set()
-        tree.event_generate("<Return>")                      # loads the selected row into the form (double-click does the same)
+        self.assertTrue(tree.bind("<Return>") and tree.bind("<Double-1>"))      # both the keyboard and the double-click load the row
+        tree.load_selected()                                  # what they call: loads the selected row into the form (a generated key event is unreliable on Windows)
         self.win.update()
         self.btn("M").invoke()                                # now a bit in M
         ents[2].delete(0, "end")

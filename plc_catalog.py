@@ -217,7 +217,24 @@ def describe(key):
     if not p.complete:
         lines.append("The list may be incomplete (only part of it was seen).")
     lines.extend(p.notes)
+    lines.extend(SETUP_HINTS.get(key, []))
     return "\n".join(lines)
+
+
+# Help shown in the Add Connection window for types that need setup on the PLC first. NOT part of the shared contract (the exported catalog does not carry it).
+SETUP_HINTS = {
+    "Q_TCP": [
+        "Which module is it? A name like Q64PN is the POWER SUPPLY. The CPU is the module printed Q03UDE, Q06UDEH, Q03UDV ... (the bigger one next to it).",
+        "Ethernet: a CPU with E or V in its name (Q03UDE, Q04UDEH, Q06UDEH, Q03UDV ...) has an Ethernet port built in; the others need an Ethernet module such as QJ71E71-100.",
+        "Port: there is NO default. It is the port someone set under 'Open settings' in GX Works2 (MC protocol, binary code, TCP or UDP). GX Works2 shows it in HEX: 1388 = 5000, 1389 = 5001, "
+        "138A = 5002, 1393 = 5011. Usual choices: 5000, 5001, 5006, 5007. Not known? Network tools > Port scanner, ports 5000-5020 (the PLC IP must answer first).",
+        "If nothing answers: the Open settings were never written to the PLC (write the parameters, then power the PLC off and on once), or the CPU has no Ethernet port.",
+        "On Q series the X and Y numbers are hexadecimal (X0 to XF, then X10). ProtoProbe reads D, M, R, W.",
+    ],
+    "FX5U_TCP": [
+        "FX5U: the SLMP port is set in GX Works3 (Ethernet port > external device communication); 5007 and 5006 are the usual choices.",
+    ],
+}
 
 
 # What a deployment needs, per ProtoProbe driver id: the protocol name the dashboard's commissioning pack uses, the Python package(s) the reader needs,
