@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.4.1"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -353,8 +353,8 @@ def explain_exception(exc, protocol=None, ip=None, adapters=None):
     """An exception in plain words, never an empty text. A TimeoutError has NO text of its own, so a failed read used to show only "failed:" or "TimeoutError"."""
     text = str(exc).strip()
     winerror = getattr(exc, "winerror", None)
-    mc_hint = (" For a Mitsubishi Q series the port is the one set under 'Open settings' in GX Works2 (GX Works shows it in HEX: 1388 = 5000); "
-               "scan 5000-5020 under Network tools > Port scanner. If Open settings says UDP, set the connection's transport to udp.") if protocol == "mc_protocol_3e" else ""
+    mc_hint = (" For a Mitsubishi Q series the port is the one set under 'Open settings' in GX Works2 (GX Works may show it in hexadecimal, 1388 hex = 5000 decimal, and ProtoProbe wants decimal); "
+               "scan 5000-5020 under Network tools > Port scanner, or run Connection doctor. If Open settings says UDP, set the connection's transport to udp.") if protocol == "mc_protocol_3e" else ""
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or winerror == 10060:
         return ("no answer from the PLC (timeout). Usual causes: a wrong IP or port, this PC is in another subnet, a firewall, the cable, "
                 "or the PLC has no communication port open on this port." + mc_hint + _net_hint(ip, adapters))
@@ -3611,6 +3611,9 @@ class ScanResultsScreen(ttk.Frame):
         self.status_label.pack(side="right")
         self.progress_bar = ttk.Progressbar(header, length=150, maximum=1.0, mode="determinate")
         self.progress_bar.pack(side="right", padx=(0, 10))
+        # the reason a scan read nothing (or only part): its own wrapped line, because the status at the top right is short and gets cut off
+        self.problem_label = ttk.Label(self, text="", foreground="#b9770e", wraplength=1000, justify="left")
+        self.problem_label.pack(anchor="w", padx=20, pady=(0, 4))
 
         ttk.Label(
             self,
@@ -3701,6 +3704,7 @@ class ScanResultsScreen(ttk.Frame):
     def update_status(self):
         running = " (running)" if self.app.scan_running else ""
         self.status_label.configure(text=f"{self.app.scan_status_text}{running}")
+        self.problem_label.configure(text=getattr(self.app, "scan_problem_text", ""))
         self.progress_bar["value"] = self.app.scan_progress if self.app.scan_running else 0.0
 
     def _rebuild_filters(self, distinct_types):
@@ -4624,6 +4628,7 @@ class App(tk.Tk):
         self.scan_running = False
         self.scan_progress = 0.0            # 0..1 of the job being read (all its snapshots)
         self.scan_stop_event = threading.Event()
+        self._scan_problem, self._scan_new_rows, self.scan_problem_text = None, 0, ""     # why a scan read nothing (see _scan_finished_text)
 
         self._set_window_icon()
         self._build_menu()
@@ -4644,11 +4649,25 @@ class App(tk.Tk):
         self.scan_stop_event.clear()
         self.scan_running = True
         self.scan_status_text = "Starting..."
+        self._scan_problem, self._scan_new_rows, self.scan_problem_text = None, 0, ""
         threading.Thread(target=target_fn, args=args + (self.scan_stop_event,), daemon=True).start()
 
     def stop_background_scan(self):
         self.scan_stop_event.set()
         self.scan_status_text = "Stopping..."
+
+    def _scan_finished_text(self):
+        """(status, details) when a scan job ends. A scan that read NOTHING must not just say Done: the owner's first field scan showed 'Done' and an
+        empty table while every read had timed out."""
+        problem = self._scan_problem
+        if self._scan_new_rows == 0:
+            details = ("No address could be read, so there is nothing to show. " + (f"What the scan reported: {problem} " if problem else "") +
+                       "Next: Connections > Read a Value on one address to see the PLC's own reason, or Connection doctor / Capture traffic. "
+                       "Press F1 for the troubleshooting list.")
+            return "Done -- nothing could be read", details
+        if problem:
+            return "Done -- some reads failed", f"What the scan reported: {problem}"
+        return "Done", ""
 
     def _scan_pump(self):
         try:
@@ -4656,10 +4675,13 @@ class App(tk.Tk):
                 kind, data = self.scan_out_queue.get_nowait()
                 if kind == "status":
                     self.scan_status_text = data
+                    if "failed" in data or "skipped" in data:
+                        self._scan_problem = data
                 elif kind == "progress":
                     self.scan_progress = data
                 elif kind == "results":
                     conn_name, job_label, results = data
+                    self._scan_new_rows += len(results)
                     for r in results:
                         self.scan_results.append({
                             "conn_name": conn_name, "job_label": job_label,
@@ -4681,7 +4703,7 @@ class App(tk.Tk):
                 elif kind == "job_done":
                     self.scan_running = False
                     self.scan_progress = 0.0
-                    self.scan_status_text = "Done"
+                    self.scan_status_text, self.scan_problem_text = self._scan_finished_text()
                 if "scan_results" in self.screens:
                     self.screens["scan_results"].update_status()
         except queue.Empty:

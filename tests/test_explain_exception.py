@@ -20,7 +20,8 @@ class Explain(unittest.TestCase):
     def test_mitsubishi_gets_the_q_series_port_help(self):
         text = pp.explain_exception(asyncio.TimeoutError(), "mc_protocol_3e")
         self.assertIn("Open settings", text)
-        self.assertIn("1388 = 5000", text)
+        self.assertIn("1388 hex = 5000 decimal", text)
+        self.assertIn("Connection doctor", text)
         self.assertNotIn("Open settings", pp.explain_exception(asyncio.TimeoutError(), "s7comm"))
 
     def test_refused_unreachable_and_reset(self):

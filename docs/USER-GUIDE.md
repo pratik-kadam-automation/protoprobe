@@ -92,7 +92,7 @@ What your scans found, across all connections: addresses whose value changed fir
 
 **Watch out:**
 - The suggested use is a GUESS from how a value moved in a few snapshots. Confirm it on the machine before you rely on it.
-- A scan that read nothing shows no rows: check Read a Value first.
+- A scan that read nothing says so under its title and shows no rows: check Read a Value first.
 
 **Can I skip it?** Skip it if you already know your addresses (for example from a tag export).
 
@@ -285,7 +285,7 @@ What to do:
 ### A scan says Done but shows no rows
 
 Usual causes:
-- Nothing could be read: every address failed.
+- Nothing could be read: every address failed. The scan now says 'Done -- nothing could be read' and shows what it reported.
 
 What to do:
 - Use Read a Value on one address first. When that works, scan again. Run Connection doctor or Capture traffic to see why not.
