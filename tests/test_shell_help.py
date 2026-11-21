@@ -35,6 +35,7 @@ class Shell(unittest.TestCase):
             if w is not None and w.winfo_exists():
                 w.destroy()
         self.app.destroy()
+        __import__('gc').collect()    # finalise Tk variables on the main thread (see test_guided_s7_tag.collect_tk_garbage)
 
     def test_sidebar_is_grouped_and_every_tab_present(self):
         labels = [t for t in texts(self.app) if isinstance(t, str)]
@@ -155,6 +156,7 @@ class AddConnectionWindow(unittest.TestCase):
             win.destroy()
         finally:
             app.destroy()
+            __import__('gc').collect()    # finalise Tk variables on the main thread (see test_guided_s7_tag.collect_tk_garbage)
 
 
 def _all(widget):
@@ -179,6 +181,7 @@ class TourButtons(unittest.TestCase):
             tour.destroy()
         finally:
             app.destroy()
+            __import__('gc').collect()    # finalise Tk variables on the main thread (see test_guided_s7_tag.collect_tk_garbage)
 
 
 if __name__ == "__main__":

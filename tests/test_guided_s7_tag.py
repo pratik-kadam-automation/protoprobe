@@ -12,6 +12,14 @@ import protoprobe as pp  # noqa: E402
 from tkinter import messagebox  # noqa: E402
 
 
+
+def collect_tk_garbage():
+    """Finalise leftover Tk variables NOW, on the main thread. Python's garbage collector may otherwise run a Tk Variable's cleanup inside a background
+    read thread; that Tcl call from the wrong thread waits up to a second for a main loop that a test's update() loop is not running, so the read's
+    result arrives late and the test's one-second wait ends first."""
+    import gc
+    gc.collect()
+
 class FakeS7:
     """Answers the tag named Good; the tag Bad is logged as the real driver does and left out."""
     def __init__(self, cfg):
@@ -82,6 +90,7 @@ class GuidedDialog(unittest.TestCase):
         messagebox.showerror = self._orig
         self.app.destroy()
         tk._default_root = self._saved_root
+        collect_tk_garbage()
 
     def button(self, text):
         return next(w for w in walk(self.win) if w.winfo_class() in ("TRadiobutton", "TButton") and w.cget("text") == text)
@@ -156,6 +165,7 @@ class QuickRead(unittest.TestCase):
         pp.DRIVER_FACTORY["s7comm"] = self.old
         self.app.destroy()
         tk._default_root = self._saved_root
+        collect_tk_garbage()
 
     def pump(self, seconds):
         import time

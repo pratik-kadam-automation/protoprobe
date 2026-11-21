@@ -32,6 +32,7 @@ class CaptureWindow(unittest.TestCase):
                 top.destroy()
         finally:
             app.destroy()
+            __import__('gc').collect()    # finalise Tk variables on the main thread (see test_guided_s7_tag.collect_tk_garbage)
 
 
 if __name__ == "__main__":

@@ -72,6 +72,7 @@ class Applied(unittest.TestCase):
 
     def tearDown(self):
         self.app.destroy()
+        __import__('gc').collect()    # finalise Tk variables on the main thread (see test_guided_s7_tag.collect_tk_garbage)
 
     def test_every_available_scheme_applies_and_repaints(self):
         for key, _ in themes.available(pp.SV_TTK_AVAILABLE):
