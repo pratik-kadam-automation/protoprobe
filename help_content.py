@@ -65,7 +65,7 @@ SCREENS = {
                   "Export suggestions writes the candidates to CSV or JSON.",
                   "Search for a known value: type a number you can see on the machine's screen to find where the PLC keeps it."],
         "watch": ["The suggested use is a GUESS from how a value moved in a few snapshots. Confirm it on the machine before you rely on it.",
-                  "A scan that read nothing shows no rows: check Read a Value first."],
+                  "A scan that read nothing says so under its title and shows no rows: check Read a Value first."],
         "skip": "Skip it if you already know your addresses (for example from a tag export).",
     },
     "network": {
@@ -156,7 +156,7 @@ TROUBLESHOOTING = [
      ["PUT/GET access is not allowed in the PLC.", "The block uses optimized access.", "The block is empty (no variables).", "Wrong rack or slot."],
      ["Check PUT/GET and optimized access in TIA Portal; S7-1200/1500 use rack 0 slot 1."]),
     ("A scan says Done but shows no rows",
-     ["Nothing could be read: every address failed."],
+     ["Nothing could be read: every address failed. The scan now says 'Done -- nothing could be read' and shows what it reported."],
      ["Use Read a Value on one address first. When that works, scan again. Run Connection doctor or Capture traffic to see why not."]),
     ("A value looks absurd (for example 7e-40)",
      ["The 32-bit word order is wrong, or the data type or address is wrong."],
