@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.3.9"
+APP_VERSION = "0.4.0"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -61,6 +61,12 @@ import workspace
 import arpscan
 import modbus_scan
 import evidence
+import help_content
+import help_ui
+import prefs
+import diagnostics
+import ui_style
+import capture
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
@@ -285,6 +291,10 @@ def explain_s7_error(message):
     return None
 
 
+READS_OK = {"seen": False}
+RING = diagnostics.RingHandler()
+
+
 def read_tags_once(conn, tags, driver_factory=None):
     """Read several tags once over ONE connection: {name: (value, None)} or {name: (None, "what went wrong")}. The drivers log a failed tag
     instead of raising, so their warning text is collected and returned as the reason; a failure to connect is the reason for every tag."""
@@ -322,7 +332,10 @@ def read_tags_once(conn, tags, driver_factory=None):
         for lg in loggers:
             lg.removeHandler(collector)
     fallback = next(iter(collector.errors.values()), "no value came back")
-    return {t["name"]: ((values[t["name"]], None) if t["name"] in values else (None, collector.errors.get(t["name"]) or fallback)) for t in tags}
+    result = {t["name"]: ((values[t["name"]], None) if t["name"] in values else (None, collector.errors.get(t["name"]) or fallback)) for t in tags}
+    if any(err is None for _, err in result.values()):
+        READS_OK["seen"] = True                      # the Start here list on the Dashboard ticks "read one value"
+    return result
 
 
 def _net_hint(ip, adapters=None):
@@ -1148,6 +1161,18 @@ class DashboardScreen(ttk.Frame):
         self.mode_val = self._metric_card(cards, "Mode", "--", 2)
         self.oee_val = self._metric_card(cards, "OEE (est.)", "--", 3)
 
+        start = ttk.LabelFrame(self, text="Start here")
+        start.pack(fill="x", padx=20, pady=(4, 0))
+        self.start_labels = []
+        for _ in range(4):
+            lbl = ttk.Label(start, text="", wraplength=900, justify="left")
+            lbl.pack(anchor="w", padx=10, pady=1)
+            self.start_labels.append(lbl)
+        start_row = ttk.Frame(start)
+        start_row.pack(anchor="w", padx=8, pady=(4, 6))
+        ttk.Button(start_row, text="Take the tour", command=self.app.start_tour).pack(side="left", padx=2)
+        ttk.Button(start_row, text="Open Help", command=lambda: self.app.show_help("dashboard")).pack(side="left", padx=2)
+
         conn_frame = ttk.LabelFrame(self, text="Connections")
         conn_frame.pack(fill="both", expand=True, padx=20, pady=12)
         self.conn_tree = ttk.Treeview(
@@ -1168,8 +1193,13 @@ class DashboardScreen(ttk.Frame):
         val_label.pack(anchor="w", padx=12, pady=(0, 10))
         return val_label
 
+    def update_checklist(self):
+        for lbl, (done, text) in zip(self.start_labels, self.app.checklist()):
+            lbl.configure(text=("[x] " if done else "[  ] ") + text)
+
     def refresh(self):
         conns = self.app.connections
+        self.update_checklist()
         self.status_label.configure(
             text=f"{len(conns)} connection(s) configured" if conns else "No connections yet"
         )
@@ -1462,6 +1492,9 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(ctrl, text="Load Multi-PLC Config", command=self.load_full_config).pack(side="left", padx=4)
 
     def refresh(self):
+        if not hasattr(self, "_empty_hint"):
+            self._empty_hint = help_ui.make_empty_hint(self.conn_tree, "No connections yet.\nPress Add Connection, choose the PLC type and type its IP address.\nPress F1 for help.")
+        help_ui.toggle_hint(self._empty_hint, not self.app.connections)
         selected = self.conn_tree.selection()
         self.conn_tree.delete(*self.conn_tree.get_children())
         for name, conn in self.app.connections.items():
@@ -1491,7 +1524,10 @@ class ConnectionsScreen(ttk.Frame):
         win = tk.Toplevel(self)
         win.title("Edit Connection" if existing else "Add Connection")
         win.geometry("480x660")
+        win.minsize(460, 520)
         win.grab_set()
+        bottom_bar = ttk.Frame(win)                     # created first and packed at the bottom: the long hint text can no longer push Save out of sight
+        bottom_bar.pack(side="bottom", fill="x")
 
         ttk.Label(win, text="Connection Name").pack(anchor="w", padx=8, pady=(8, 0))
         name_entry = ttk.Entry(win, width=30)
@@ -1539,7 +1575,8 @@ class ConnectionsScreen(ttk.Frame):
             for label, default in INTERFACE_FIELDS[protocol_key]:
                 row = ttk.Frame(fields_frame)
                 row.pack(fill="x", pady=2)
-                ttk.Label(row, text=label, width=16).pack(side="left")
+                field_label = ttk.Label(row, text=label, width=16)
+                field_label.pack(side="left")
                 e = ttk.Entry(row, width=25)
                 val = str(existing.interface.get(label, default)) if existing else default
                 if label in type_overrides:
@@ -1547,6 +1584,8 @@ class ConnectionsScreen(ttk.Frame):
                 e.insert(0, val)
                 e.pack(side="left")
                 field_entries[label] = e
+                help_ui.Tooltip(e, help_content.FIELD_HELP.get(label))
+                help_ui.Tooltip(field_label, help_content.FIELD_HELP.get(label))
 
             chosen = type_key_of.get(type_cb.get())
             if chosen:
@@ -1623,7 +1662,7 @@ class ConnectionsScreen(ttk.Frame):
             self.app.refresh_dashboard()
             win.destroy()
 
-        ttk.Button(win, text="Save", command=save).pack(pady=8)
+        ttk.Button(bottom_bar, text="Save", command=save, style="Accent.TButton" if SV_TTK_AVAILABLE else "TButton").pack(pady=8)
 
     def remove_connection(self):
         sel = self.conn_tree.selection()
@@ -3205,6 +3244,9 @@ class LiveValuesScreen(ttk.Frame):
         return win
 
     def refresh(self):
+        if not hasattr(self, "_empty_hint"):
+            self._empty_hint = help_ui.make_empty_hint(self.live_tree, "No tags yet.\nAdd tags on Connections (Manage Tags or Scan for Live Tags), then press Start All.")
+        help_ui.toggle_hint(self._empty_hint, not any(c.tags for c in self.app.connections.values()))
         for child in self.health_frame.winfo_children():
             child.destroy()
         kept = self.live_tree.selection()            # a refresh must not drop the rows the user just selected
@@ -3706,6 +3748,9 @@ class ScanResultsScreen(ttk.Frame):
         return ", ".join(matches) if matches else None
 
     def refresh(self):
+        if not hasattr(self, "_empty_hint"):
+            self._empty_hint = help_ui.make_empty_hint(self.tree, "No scan results yet.\nOn Connections press Scan for Live Tags. A scan that reads nothing shows no rows: try Read a Value first.")
+        help_ui.toggle_hint(self._empty_hint, not self.app.scan_results)
         distinct_types = sorted({r.get("type_label", "?") for r in self.app.scan_results})
         if distinct_types != self._last_distinct_types:
             self._rebuild_filters(distinct_types)
@@ -4540,6 +4585,17 @@ class App(tk.Tk):
         super().__init__()
         self.title(APP_NAME)
         self.geometry("1080x780")
+        self.minsize(980, 620)
+        self.prefs_path = None                  # set by enable_workspace: a plain App() in a test never reads or writes a profile
+        self._tour_window = None
+        self._help_window = None
+        self.current_screen = "dashboard"
+        self.is_admin = capture.is_admin()
+        root_log = logging.getLogger()
+        if RING not in root_log.handlers:
+            root_log.addHandler(RING)
+        logging.getLogger("protoprobe").setLevel(logging.INFO)
+        logging.getLogger("protoprobe").info("ProtoProbe %s started", APP_VERSION)
 
         self.oee_config = {}
         self.oee_runtime = {
@@ -4576,6 +4632,9 @@ class App(tk.Tk):
         self.show_screen("dashboard")
         self.after(150, self._poll_queue)
         self.after(200, self._scan_pump)
+        self.after(1000, self._status_tick)
+        self.bind("<F1>", lambda e: self.show_help(self.current_screen))
+        self.bind("<Control-h>", lambda e: self.show_help())
 
     def start_background_scan(self, target_fn, args):
         """Launches a scan job (single-area or full-PLC) on a daemon
@@ -4639,6 +4698,7 @@ class App(tk.Tk):
         else:
             text_bg, text_fg, cursor = "#ffffff", "#000000", "#000000"
 
+        ui_style.configure()
         for widget in self.dark_aware_texts:
             try:
                 widget.configure(bg=text_bg, fg=text_fg, insertbackground=cursor)
@@ -4669,6 +4729,13 @@ class App(tk.Tk):
         file_menu.add_command(label="Exit", command=self._on_close)
         menubar.add_cascade(label="File", menu=file_menu)
         help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="Take the tour", command=self.start_tour)
+        help_menu.add_command(label="Help for this screen\tF1", command=lambda: self.show_help(self.current_screen))
+        help_menu.add_command(label="Help topics\tCtrl+H", command=lambda: self.show_help())
+        help_menu.add_command(label="Troubleshooting", command=lambda: self.show_help("__troubleshooting__"))
+        help_menu.add_separator()
+        help_menu.add_command(label="Export diagnostics...", command=self.export_diagnostics)
+        help_menu.add_separator()
         help_menu.add_command(label="About ProtoProbe", command=self.show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
         self.config(menu=menubar)
@@ -4697,7 +4764,21 @@ class App(tk.Tk):
         ).pack(pady=(12, 0))
         ttk.Button(win, text="Close", command=win.destroy).pack(pady=16)
 
+    def _build_status_bar(self):
+        bar = ttk.Frame(self)
+        bar.pack(side="bottom", fill="x")
+        ttk.Separator(bar).pack(side="top", fill="x")
+        tk.Label(bar, text=" READ-ONLY ", background="#2e9d5b", foreground="#ffffff", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(10, 8), pady=3)
+        self.status_labels = {}
+        for key in ("connections", "polling", "scan", "admin"):
+            lbl = ttk.Label(bar, text="", font=("Segoe UI", 8), foreground="gray")
+            lbl.pack(side="left", padx=8)
+            self.status_labels[key] = lbl
+        ttk.Label(bar, text=f"{APP_NAME} v{APP_VERSION}", font=("Segoe UI", 8), foreground="gray").pack(side="right", padx=10)
+        help_ui.Tooltip(bar.winfo_children()[1], "ProtoProbe only reads from PLCs. It never writes a value.")
+
     def _build_shell(self):
+        self._build_status_bar()
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True)
 
@@ -4720,13 +4801,24 @@ class App(tk.Tk):
         )
 
         self.nav_buttons = {}
-        for key, label in NAV_ITEMS:
-            btn = ttk.Button(sidebar, text=label, command=lambda k=key: self.show_screen(k))
-            btn.pack(fill="x", padx=10, pady=2)
-            self.nav_buttons[key] = btn
+        labels = dict(NAV_ITEMS)
+        for group_title, keys in help_content.GROUPS:
+            ttk.Label(sidebar, text=group_title.upper(), style="Group.TLabel").pack(anchor="w", padx=14, pady=(10, 2))
+            for key in keys:
+                btn = ttk.Button(sidebar, text=labels[key], command=lambda k=key: self.show_screen(k))
+                btn.pack(fill="x", padx=10, pady=2)
+                self.nav_buttons[key] = btn
 
-        content = ttk.Frame(container)
-        content.pack(side="left", fill="both", expand=True)
+        content_outer = ttk.Frame(container)
+        content_outer.pack(side="left", fill="both", expand=True)
+        top_bar = ttk.Frame(content_outer)
+        top_bar.pack(side="top", fill="x")
+        self.crumb = ttk.Label(top_bar, text="", foreground="gray")
+        self.crumb.pack(side="left", padx=20, pady=6)
+        ttk.Button(top_bar, text="? Help (F1)", command=lambda: self.show_help(self.current_screen)).pack(side="right", padx=14, pady=4)
+        ttk.Separator(content_outer).pack(side="top", fill="x")
+        content = ttk.Frame(content_outer)
+        content.pack(side="top", fill="both", expand=True)
 
         self.screens["dashboard"] = DashboardScreen(content, self)
         self.screens["connections"] = ConnectionsScreen(content, self)
@@ -4745,6 +4837,9 @@ class App(tk.Tk):
             screen.place(x=0, y=0, relwidth=1, relheight=1)
 
     def show_screen(self, key):
+        self.current_screen = key
+        if hasattr(self, "crumb"):
+            self.crumb.configure(text=f"{help_content.group_of(key)}  >  {help_content.SCREENS[key]['title']}")
         self.screens[key].tkraise()
         for k, btn in self.nav_buttons.items():
             btn.state(["pressed"] if k == key else ["!pressed"])
@@ -4802,9 +4897,104 @@ class App(tk.Tk):
         self.refresh_dashboard()
         return warnings
 
+    # ---- help, tour, status bar, diagnostics, crash report ------------------------------------------------------------------
+
+    def checklist(self):
+        """[(done, text)] for the Start here list on the Dashboard, worked out from what the person has really done."""
+        conns = list(self.connections.values())
+        return [
+            (bool(conns), "Add a connection: Connections > Add Connection."),
+            (READS_OK["seen"], "Read one value to prove the link works: Connections > Read a Value."),
+            (any(c.tags for c in conns) or bool(self.scan_results), "Find or add tags: Connections > Scan for Live Tags, or Manage Tags."),
+            (any(c.thread is not None and c.thread.is_alive() for c in conns), "Watch live values: Connections > Start All, then open Live values."),
+        ]
+
+    def show_help(self, key=None):
+        if self._help_window is not None and self._help_window.winfo_exists():
+            self._help_window.select(key or self._help_window.current)
+            self._help_window.lift()
+            return self._help_window
+        self._help_window = help_ui.HelpWindow(self, key)
+        return self._help_window
+
+    def start_tour(self):
+        if self._tour_window is not None and self._tour_window.winfo_exists():
+            self._tour_window.lift()
+            return self._tour_window
+        self._tour_window = help_ui.TourWindow(self, on_close=self._tour_closed)
+        return self._tour_window
+
+    def _tour_closed(self, finished):
+        if self.prefs_path:
+            data = prefs.load(self.prefs_path)
+            data["tour_done"] = True                 # shown once: any way of closing it counts as seen
+            prefs.save(self.prefs_path, data)
+
+    def maybe_start_tour(self):
+        """First run only (prefs file says so); a plain App() in a test has no prefs file and never shows it."""
+        if self.prefs_path and not prefs.load(self.prefs_path)["tour_done"]:
+            self.start_tour()
+
+    def _status_tick(self):
+        try:
+            conns = list(self.connections.values())
+            polling = sum(1 for c in conns if c.thread is not None and c.thread.is_alive())
+            self.status_labels["connections"].configure(text=f"Connections: {len(conns)}")
+            self.status_labels["polling"].configure(text=f"Polling: {polling}" if polling else "Polling: off")
+            self.status_labels["scan"].configure(text="Scan: running" if self.scan_running else "Scan: idle")
+            self.status_labels["admin"].configure(text="Administrator: yes" if self.is_admin else "Administrator: no")
+            dash = self.screens.get("dashboard")
+            if dash is not None and self.current_screen == "dashboard":
+                dash.update_checklist()
+        except tk.TclError:
+            return                                    # the window is closing
+        self.after(1000, self._status_tick)
+
+    def diagnostics_text(self, hide_ips=True):
+        import netcheck
+        adapters = netcheck.local_adapters(hidden_kwargs=hidden_subprocess_kwargs())
+        return diagnostics.build(APP_NAME, APP_VERSION, list(self.connections.values()), RING.lines, adapters, self.is_admin, hide_ips)
+
+    def export_diagnostics(self):
+        hide = messagebox.askyesno("Export diagnostics", "Hide IP and MAC addresses in the report?\n\nRecommended when you send it to someone. The report holds the "
+                                   "version, this PC's network settings, the connections' settings and the last log lines. It holds no tag values and no passwords.")
+        path = filedialog.asksaveasfilename(defaultextension=".txt", initialfile="protoprobe-diagnostics.txt", filetypes=[("Text", "*.txt")])
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.diagnostics_text(hide))
+        except OSError as exc:
+            messagebox.showerror("Export diagnostics", f"Could not write the file:\n{exc}")
+            return
+        messagebox.showinfo("Export diagnostics", f"Saved to:\n{path}")
+
+    def report_callback_exception(self, exc, val, tb):
+        """An error inside a screen must not close the app silently: write a report next to the workspace and say where it is."""
+        import traceback
+        import tempfile
+        text = "".join(traceback.format_exception(exc, val, tb))
+        logging.getLogger("protoprobe").error("Unhandled error:\n%s", text)
+        path = None
+        try:
+            folder = os.path.dirname(self.prefs_path) if self.prefs_path else tempfile.gettempdir()
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, time.strftime("protoprobe-crash-%Y%m%d-%H%M%S.txt"))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text + "\n\n" + self.diagnostics_text(True))
+        except Exception:
+            path = None
+        self.last_crash_report = path
+        if time.time() - getattr(self, "_last_crash_dialog", 0) > 10:
+            self._last_crash_dialog = time.time()
+            where = f"A report was saved here:\n{path}\n\n" if path else ""
+            messagebox.showerror(APP_NAME, "Something unexpected went wrong. You can keep working, but this action did not finish.\n\n" + where +
+                                 "Please send the report to whoever supports you.")
+
     def enable_workspace(self, path=None):
         """Remember connections and tags between sessions: load the saved file now, save changes every few seconds and when the window closes."""
         self.workspace_file = path or workspace.default_path()
+        self.prefs_path = prefs.path_for(self.workspace_file)
         data, message = workspace.load(self.workspace_file)
         notes = [message] if message else []
         if data:
@@ -5014,4 +5204,5 @@ class App(tk.Tk):
 if __name__ == "__main__":
     app = App()
     app.enable_workspace()
+    app.after(900, app.maybe_start_tour)
     app.mainloop()
