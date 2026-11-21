@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.3.7"
+APP_VERSION = "0.3.8"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -1436,6 +1436,7 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(btn_row, text="Read a Value", command=self.open_quick_read).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Scan for Live Tags", command=self.open_scan_dialog).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Connection doctor", command=self.open_doctor).pack(side="left", padx=2)
+        ttk.Button(btn_row, text="Capture traffic", command=self.open_capture).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Import tags from file...", command=self.open_import_dialog).pack(side="left", padx=2)
 
         self.conn_tree = ttk.Treeview(
@@ -2190,6 +2191,105 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(row, text="Add + include in output JSON", command=lambda: add(True)).pack(side="left", padx=6)
         ttk.Button(row, text="Close", command=win.destroy).pack(side="right")
         return win
+
+    def open_capture(self):
+        """A small Wireshark for the selected connection's PLC: records the packets to and from its IP (needs administrator on Windows),
+        decodes MC / S7 / Modbus, says why a read failed, saves a .pcap for Wireshark. Passive: it sends nothing itself."""
+        sel = self.conn_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a connection", "Click a connection's row above first")
+            return
+        conn = self.app.connections[sel[0]]
+        ip = conn.interface.get("ip") or conn.interface.get("device_ip")
+        if not ip:
+            messagebox.showinfo("Capture traffic", "This connection has no IP address (a serial connection cannot be captured here).")
+            return
+        import capture
+        win = tk.Toplevel(self)
+        win.title(f"Capture traffic -- {conn.name} ({ip})")
+        win.geometry("900x620")
+        ttk.Label(win, text="1) Start  2) do the read (Send a test read, or Read a Value / Scan in ProtoProbe)  3) Stop. Needs administrator on Windows. "
+                  "Nothing is sent by the capture itself.", wraplength=860, foreground="gray").pack(anchor="w", padx=8, pady=(8, 0))
+        packets_box = tk.Text(win, wrap="none", font=("Consolas", 9), height=18)
+        packets_box.pack(fill="both", expand=True, padx=8, pady=6)
+        ttk.Label(win, text="What the packets say").pack(anchor="w", padx=8)
+        analysis_box = tk.Text(win, wrap="word", font=("Segoe UI", 10), height=9)
+        analysis_box.pack(fill="x", padx=8, pady=(0, 6))
+        state = {"cap": None, "lines": [], "t0": None}
+        incoming = queue.Queue()
+
+        def drain():
+            try:
+                while True:
+                    pkt = incoming.get_nowait()
+                    text = capture.line(pkt, state["cap"].local_ip, state["t0"])
+                    state["lines"].append(text)
+                    packets_box.insert("end", text + "\n")
+                    packets_box.see("end")
+            except queue.Empty:
+                pass
+            if state["cap"] is not None and win.winfo_exists():
+                win.after(200, drain)
+
+        def start():
+            if state["cap"] is not None:
+                return
+            cap = capture.Capture(ip, on_packet=incoming.put)
+            error = cap.start()
+            if error:
+                analysis_box.delete("1.0", "end")
+                analysis_box.insert("end", error)
+                return
+            state.update(cap=cap, lines=[], t0=cap.t0)
+            packets_box.delete("1.0", "end")
+            analysis_box.delete("1.0", "end")
+            analysis_box.insert("end", f"Capturing on {cap.local_ip} ... press Stop when the read is done.")
+            drain()
+
+        def stop():
+            cap = state["cap"]
+            if cap is None:
+                return
+            cap.stop()
+            time.sleep(0.3)
+            state["cap"] = None
+            while not incoming.empty():                      # packets that arrived after the last refresh
+                text = capture.line(incoming.get_nowait(), cap.local_ip, state["t0"])
+                state["lines"].append(text)
+                packets_box.insert("end", text + "\n")
+            analysis_box.delete("1.0", "end")
+            analysis_box.insert("end", "\n".join(capture.analyze(cap.packets, cap.local_ip, ip)))
+            state["done"] = cap
+
+        def test_read():
+            if conn.protocol != "mc_protocol_3e":
+                messagebox.showinfo("Capture traffic", "Do the read in ProtoProbe now (Read a Value, or a scan), while the capture runs.")
+                return
+            tag = {"name": "t", "device_code": "D", "device_number": 0, "data_type": "int16"}
+            threading.Thread(target=lambda: read_tag_once(conn, tag), daemon=True).start()
+
+        def save_pcap():
+            cap = state.get("done") or state["cap"]
+            if not cap or not cap.packets:
+                messagebox.showinfo("Capture traffic", "Nothing captured yet.")
+                return
+            path = filedialog.asksaveasfilename(parent=win, defaultextension=".pcap", initialfile="plc-capture.pcap")
+            if path:
+                capture.write_pcap(path, cap.packets)
+
+        def copy_text():
+            win.clipboard_clear()
+            win.clipboard_append("\n".join(state["lines"]) + "\n\n" + analysis_box.get("1.0", "end"))
+
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(row, text="Start", command=start).pack(side="left", padx=2)
+        ttk.Button(row, text="Stop", command=stop).pack(side="left", padx=2)
+        ttk.Button(row, text="Send a test read", command=test_read).pack(side="left", padx=2)
+        ttk.Button(row, text="Save .pcap (for Wireshark)", command=save_pcap).pack(side="left", padx=2)
+        ttk.Button(row, text="Copy text", command=copy_text).pack(side="left", padx=2)
+        ttk.Button(row, text="Close", command=lambda: (stop(), win.destroy())).pack(side="right", padx=2)
+        win.protocol("WM_DELETE_WINDOW", lambda: (stop(), win.destroy()))
 
     def open_doctor(self):
         """Why does this connection not read? Runs doctor.run for the selected Mitsubishi connection and shows the report (copy / save)."""
