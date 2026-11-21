@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.3.8"
+APP_VERSION = "0.3.9"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -1435,9 +1435,11 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(btn_row, text="Manage Tags", command=self.open_tag_manager).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Read a Value", command=self.open_quick_read).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Scan for Live Tags", command=self.open_scan_dialog).pack(side="left", padx=2)
-        ttk.Button(btn_row, text="Connection doctor", command=self.open_doctor).pack(side="left", padx=2)
-        ttk.Button(btn_row, text="Capture traffic", command=self.open_capture).pack(side="left", padx=2)
-        ttk.Button(btn_row, text="Import tags from file...", command=self.open_import_dialog).pack(side="left", padx=2)
+        btn_row2 = ttk.Frame(self)                      # a second row: one row of nine buttons ran off the right edge of a normal window
+        btn_row2.pack(fill="x", padx=20, pady=(0, 4))
+        ttk.Button(btn_row2, text="Connection doctor", command=self.open_doctor).pack(side="left", padx=2)
+        ttk.Button(btn_row2, text="Capture traffic", command=self.open_capture).pack(side="left", padx=2)
+        ttk.Button(btn_row2, text="Import tags from file...", command=self.open_import_dialog).pack(side="left", padx=2)
 
         self.conn_tree = ttk.Treeview(
             self, columns=("protocol", "interface", "tags", "status"), show="headings", height=10
