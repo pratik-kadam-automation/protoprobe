@@ -1,5 +1,5 @@
 """The evidence file is a contract with the dashboard (industrial-backend, aiReview.js validateEvidence). The same synthetic sample lives in both repos:
-tests/fixtures/evidence-sample.json here and test/fixtures/evidence-sample.json there. Change the builder, regenerate it (python tests/test_evidence_contract.py --write),
+tests/fixtures/evidence-sample.json here and test/fixtures/protoprobe-evidence-sample.json there. Change the builder, regenerate it (python tests/test_evidence_contract.py --write),
 copy it to the backend, and run both test suites."""
 import json
 import os
