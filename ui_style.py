@@ -4,6 +4,8 @@ State is never shown by colour alone: use `state_text` so a colour-blind person 
 """
 from tkinter import ttk
 
+import themes
+
 FONT = "Segoe UI"
 TITLE = (FONT, 16)
 HEADING = (FONT, 11, "bold")
@@ -20,6 +22,6 @@ def state_text(state):
 def configure(style=None):
     """Create the extra named styles. Safe to call again after the theme changes."""
     style = style or ttk.Style()
-    style.configure("Danger.TButton", foreground=STATE_COLOURS["fail"])
-    style.configure("Group.TLabel", foreground=MUTED, font=(FONT, 8, "bold"))
+    style.configure("Danger.TButton", foreground=themes.colour("fail"))
+    style.configure("Group.TLabel", foreground=themes.colour("muted"), font=(FONT, 8, "bold"))
     return style

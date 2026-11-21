@@ -3,6 +3,7 @@
 Tk only, no business logic. Nothing here touches a PLC or the network.
 """
 import tkinter as tk
+import themes
 from tkinter import ttk
 
 import help_content
@@ -138,7 +139,7 @@ class HelpWindow(tk.Toplevel):
         self.text.tag_configure("h1", font=("Segoe UI", 15, "bold"), spacing3=4)
         self.text.tag_configure("h2", font=("Segoe UI", 11, "bold"), spacing1=6)
         self.text.tag_configure("b", font=("Segoe UI", 10, "bold"))
-        self.text.tag_configure("muted", foreground="gray")
+        self.text.tag_configure("muted", foreground=themes.colour("muted"))
         self.text.tag_configure("item", lmargin1=14, lmargin2=30)
         self.listbox.bind("<<ListboxSelect>>", lambda e: self._on_pick())
         self.select(key or self.topics[0])
@@ -177,7 +178,7 @@ class TourWindow(tk.Toplevel):
         self.transient(parent)
         self.cards = help_content.tour_cards()
         self.index, self.on_close, self._closed = 0, on_close, False
-        self.step_label = ttk.Label(self, foreground="gray")
+        self.step_label = ttk.Label(self, foreground=themes.colour("muted"))
         self.step_label.pack(anchor="w", padx=20, pady=(16, 0))
         self.title_label = ttk.Label(self, font=("Segoe UI", 16, "bold"))
         self.title_label.pack(anchor="w", padx=20, pady=(2, 8))
@@ -185,7 +186,7 @@ class TourWindow(tk.Toplevel):
         self.body.pack(fill="both", expand=True, padx=20)
         bottom = ttk.Frame(self)
         bottom.pack(side="bottom", fill="x", padx=20, pady=14)
-        ttk.Label(bottom, text="Reopen: Help > Take the tour", foreground="gray").pack(side="left")
+        ttk.Label(bottom, text="Reopen: Help > Take the tour", foreground=themes.colour("muted")).pack(side="left")
         self.next_btn = ttk.Button(bottom, text="Next", command=self.next)
         self.next_btn.pack(side="right")
         self.back_btn = ttk.Button(bottom, text="Back", command=self.back)
@@ -229,7 +230,7 @@ class TourWindow(tk.Toplevel):
 
 def make_empty_hint(widget, text):
     """A grey instruction shown over an empty list ("No connections yet. Press Add Connection."). Hide it with toggle_hint(label, False)."""
-    return ttk.Label(widget, text=text, foreground="gray", justify="center", wraplength=420)
+    return ttk.Label(widget, text=text, foreground=themes.colour("muted"), justify="center", wraplength=420)
 
 
 def toggle_hint(label, show):

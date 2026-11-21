@@ -18,6 +18,7 @@ import struct
 import threading
 import time
 import tkinter as tk
+import themes
 from tkinter import ttk, messagebox, filedialog
 
 import commissioning as cm
@@ -97,13 +98,20 @@ class CommissioningScreen(ttk.Frame):
         self.after(150, self._pump)
 
     # ---- layout -------------------------------------------------------------------------------
+    def apply_palette(self):
+        """The review table's row colours follow the colour scheme (called by the app after a change)."""
+        if hasattr(self, "tree"):
+            self.tree.tag_configure("confirmed", foreground=themes.colour("ok"))
+            self.tree.tag_configure("probable", foreground=themes.colour("warn"))
+            self.tree.tag_configure("unverified", foreground=themes.colour("fail"))
+
     def _build(self):
         head = ttk.Frame(self)
         head.pack(fill="x", padx=20, pady=(18, 4))
         ttk.Label(head, text="Commissioning wizard", font=("Segoe UI", 16)).pack(side="left")
         ttk.Checkbutton(head, text="Practice mode (simulated PLC, no hardware)", variable=self.practice_var,
                         command=self._practice_toggled).pack(side="right")
-        ttk.Label(self, wraplength=980, foreground="gray", justify="left",
+        ttk.Label(self, wraplength=980, foreground=themes.colour("muted"), justify="left",
                   text="Find each signal's address and PROVE it against the HMI before the gateway goes live, so nobody has to rediscover "
                        "a wrong tag on a deployed gateway weeks later. Answer a few questions, record four readings (two to find, two to "
                        "verify), then export a commissioning pack for the dashboard.").pack(anchor="w", padx=20, pady=(0, 8))
@@ -119,13 +127,13 @@ class CommissioningScreen(ttk.Frame):
 
     def _build_questions(self):
         # Bottom bar first, so it is always visible; the questions scroll above it.
-        self.q_msg = ttk.Label(self.t_q, text="", foreground="#c0392b")
+        self.q_msg = ttk.Label(self.t_q, text="", foreground=themes.colour("fail"))
         bar = ttk.Frame(self.t_q)
         bar.pack(side="bottom", fill="x", padx=14, pady=10)
         self.q_msg.pack(side="bottom", anchor="w", padx=14)
         self.btn_test = ttk.Button(bar, text="Test connection (Mitsubishi SLMP)", command=self.test_connection)
         self.btn_test.pack(side="left")
-        self.test_msg = ttk.Label(bar, text="", foreground="gray", wraplength=620, justify="left")
+        self.test_msg = ttk.Label(bar, text="", foreground=themes.colour("muted"), wraplength=620, justify="left")
         self.test_msg.pack(side="left", padx=12)
         ttk.Button(bar, text="Next: readings", command=self._questions_done).pack(side="right")
 
@@ -186,7 +194,7 @@ class CommissioningScreen(ttk.Frame):
             else:
                 ttk.Entry(cell, textvariable=var, width=40).pack(side="top", anchor="w")
             if q.help:
-                ttk.Label(cell, text=q.help, foreground="gray", wraplength=420, justify="left").pack(side="top", anchor="w")
+                ttk.Label(cell, text=q.help, foreground=themes.colour("muted"), wraplength=420, justify="left").pack(side="top", anchor="w")
             r += 1
 
     def _set_choice(self, key, choices, label):
@@ -214,7 +222,7 @@ class CommissioningScreen(ttk.Frame):
     def _build_readings(self):
         self.r_info = ttk.Label(self.t_r, text="Answer the questions first.", wraplength=980, justify="left")
         self.r_info.pack(anchor="w", padx=14, pady=(10, 4))
-        self.practice_hint = ttk.Label(self.t_r, text="", foreground="#2471a3", wraplength=980, justify="left")
+        self.practice_hint = ttk.Label(self.t_r, text="", foreground=themes.colour("accent"), wraplength=980, justify="left")
         self.practice_hint.pack(anchor="w", padx=14)
         holder = ttk.Frame(self.t_r)
         holder.pack(fill="both", expand=True, padx=14, pady=6)
@@ -235,7 +243,7 @@ class CommissioningScreen(ttk.Frame):
         self.btn_review = ttk.Button(bar, text="Next: review", command=self._to_review)
         self.btn_review.pack(side="right")
         ttk.Button(bar, text="Import tag list ...", command=self.import_tag_list).pack(side="left", padx=8)
-        self.status = ttk.Label(bar, text="", foreground="gray")
+        self.status = ttk.Label(bar, text="", foreground=themes.colour("muted"))
         self.status.pack(side="left", padx=12)
 
     def _fill_readings(self):
@@ -274,7 +282,7 @@ class CommissioningScreen(ttk.Frame):
                 c = self.chosen[s["key"]]
                 lab = (f"DB{c.region.db}." if c.region.area == "DB" else c.region.area) + f"{c.addr}  {c.datatype}" + (f" {c.byte_order}" if c.datatype.endswith("32") else "") + "  (from the list)"
                 cb.configure(values=[lab]); cb.current(0)
-            self.read_labels[s["key"]] = ttk.Label(self.grid_frame, text="", foreground="gray")
+            self.read_labels[s["key"]] = ttk.Label(self.grid_frame, text="", foreground=themes.colour("muted"))
             self.read_labels[s["key"]].grid(row=r, column=3, sticky="w", padx=6)
 
     def _next_phase(self):
@@ -598,7 +606,7 @@ class CommissioningScreen(ttk.Frame):
 
     # ---- review -------------------------------------------------------------------------------
     def _build_review(self):
-        ttk.Label(self.t_v, wraplength=980, foreground="gray", justify="left",
+        ttk.Label(self.t_v, wraplength=980, foreground=themes.colour("muted"), justify="left",
                   text="Every tag with the evidence behind it. 'confirmed' = two fresh readings agreed with the HMI at least 30 s apart with different values; "
                        "'probable' = it fits but is not proved yet; 'unverified' = no matching evidence (it will not be applied on the dashboard). "
                        "Double-click a tag name to rename it (it must equal the FAQTIS parameter name).").pack(anchor="w", padx=14, pady=(10, 4))
@@ -607,16 +615,14 @@ class CommissioningScreen(ttk.Frame):
         for c, w in (("name", 170), ("address", 120), ("type", 110), ("scale", 60), ("role", 90), ("unit", 60), ("conf", 90), ("evidence", 300)):
             self.tree.heading(c, text=c.capitalize())
             self.tree.column(c, width=w, anchor="w")
-        self.tree.tag_configure("confirmed", foreground="#1e8449")
-        self.tree.tag_configure("probable", foreground="#b9770e")
-        self.tree.tag_configure("unverified", foreground="#c0392b")
+        self.apply_palette()
         self.tree.pack(fill="both", expand=True, padx=14, pady=6)
         self.tree.bind("<Double-1>", self._rename)
         self.rename = {}
         rb = ttk.Frame(self.t_v)
         rb.pack(fill="x", padx=14, pady=8)
         ttk.Button(rb, text="Apply suggested scales", command=self._apply_scales_clicked).pack(side="left")
-        self.scale_msg = ttk.Label(rb, text="", foreground="gray")
+        self.scale_msg = ttk.Label(rb, text="", foreground=themes.colour("muted"))
         self.scale_msg.pack(side="left", padx=10)
         ttk.Button(rb, text="Next: export", command=lambda: (self.build_tags(), self.nb.select(self.t_e))).pack(side="right")
 
@@ -685,7 +691,7 @@ class CommissioningScreen(ttk.Frame):
         bar = ttk.Frame(self.t_e)
         bar.pack(fill="x", padx=14, pady=8)
         ttk.Button(bar, text="Save commissioning pack ...", command=self.save).pack(side="left")
-        ttk.Label(bar, foreground="gray", text="Then in the dashboard: Commissioning > Import pack.").pack(side="left", padx=10)
+        ttk.Label(bar, foreground=themes.colour("muted"), text="Then in the dashboard: Commissioning > Import pack.").pack(side="left", padx=10)
 
     def pack_dict(self):
         if not hasattr(self, "tags"):

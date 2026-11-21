@@ -128,12 +128,13 @@ SCREENS = {
     },
     "settings": {
         "title": "Settings",
-        "summary": "Appearance (dark or light) and information about this version.",
-        "use_when": "To change the look, or to find the version number when you report a problem.",
+        "summary": "The colour scheme (industrial dark and light, control room, steel blue, plant green, a high-contrast scheme and, when the sv-ttk package is installed, the Modern Windows 11 style) and information about this version.",
+        "use_when": "To make the screen comfortable for the room you work in (a dark control room, a bright workshop), or to find the version number when you report a problem.",
         "needs": [],
-        "steps": ["Choose Dark or Light."],
-        "watch": [],
-        "skip": "Skip it unless you want to change the theme.",
+        "steps": ["Open the Colour scheme list and pick one: it applies at once and is remembered.", "Back to the default scheme returns to Industrial dark."],
+        "watch": ["High contrast gives the strongest text and border contrast, for bright rooms or when you need it.",
+                  "State is always also written in words (OK, Check, Fail), never by colour alone."],
+        "skip": "Skip it unless you want a different colour scheme.",
     },
 }
 
