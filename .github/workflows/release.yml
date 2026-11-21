@@ -25,7 +25,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
       - name: Tests
-        run: python -m unittest discover -s tests
+        timeout-minutes: 15
+        # If a test hangs (a window waiting for a click, a socket that never answers), print where every thread is after 9 minutes and stop, instead of waiting for hours.
+        run: python -X faulthandler -c "import faulthandler, unittest; faulthandler.dump_traceback_later(540, exit=True); unittest.main(module=None, argv=['unittest', 'discover', '-s', 'tests'])"
       - name: Tag matches the app version
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
