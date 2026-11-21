@@ -48,7 +48,39 @@ def redact(text, names=()):
     return text
 
 
-def build(answers, candidate_rows, docs=None, hide_names=(), app_version=""):
+def raw_excerpt(series, max_points=60):
+    """{"t": [], "v": [...]}: the numbers seen during the scan, evenly thinned to at most max_points (first and last kept), or None.
+    Numbers only: no text, no names. The dashboard keeps it so a person can check the claims made about the tag; it never goes into an AI prompt."""
+    nums = []
+    for v in series or []:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if f == f and abs(f) != float("inf"):
+            nums.append(int(f) if f == int(f) and abs(f) < 1e15 else f)
+    if len(nums) < 2 or max_points < 2:
+        return None
+    if len(nums) > max_points:
+        step = (len(nums) - 1) / (max_points - 1)
+        nums = [nums[round(i * step)] for i in range(max_points)]
+    return {"t": [], "v": nums}
+
+
+def leaks(text, names=()):
+    """What a final text still shows that should have been removed: a list of plain sentences (empty = clean). A last check before saving."""
+    found = []
+    for rx, what in ((_URL, "a web address"), (_EMAIL, "an e-mail address"), (_MAC, "a MAC address"), (_IPV4, "an IP address")):
+        if rx.search(text):
+            found.append(f"the text contains {what}")
+    low = text.lower()
+    for name in sorted({n.strip() for n in names if n and len(n.strip()) >= 2}):
+        if name.lower() in low:
+            found.append(f'the text contains "{name}"')
+    return found
+
+
+def build(answers, candidate_rows, docs=None, hide_names=(), app_version="", raw_points=0):
     """(payload, alias_map). `candidate_rows` are candidates.rows_from_results() rows; `docs` maps an address to {"name": ..., "comment": ...}
     from the imported Excel/PDF (optional). The payload is safe to show and to send; the alias map must stay local."""
     machine = {k: redact(v, hide_names) for k, v in answers.items() if k not in NEVER_SEND and str(v).strip() and k in
@@ -64,14 +96,20 @@ def build(answers, candidate_rows, docs=None, hide_names=(), app_version=""):
             "snapshots": row["snapshots"], "first_value": row["first_value"], "last_value": row["last_value"],
             "documented_name": redact(doc.get("name", ""), hide_names), "documented_comment": redact(doc.get("comment", ""), hide_names),
         })
+        excerpt = raw_excerpt(row.get("series"), raw_points) if raw_points else None
+        if excerpt:
+            tags[-1]["raw"] = excerpt
     payload = {
         "schema": 1, "kind": "protoprobe-evidence", "app_version": app_version, "machine": machine, "tags": tags,
         "missing_answers": [m["key"] for m in missing_for_analysis(answers)],
-        "privacy": {"aliases": True, "redacted": ["ip", "email", "mac", "url", "listed names"], "raw_recordings_included": False},
+        "privacy": {"aliases": True, "redacted": ["ip", "email", "mac", "url", "listed names"], "raw_recordings_included": False,
+                    "raw_excerpt_points": int(raw_points or 0)},
     }
     return payload, alias_map
 
 
 def preview(payload):
-    """The exact text a person approves before anything is sent."""
-    return json.dumps(payload, indent=2, ensure_ascii=False)
+    """The exact text a person approves before anything is sent. Lists of numbers (the raw excerpts) are kept on one line so the text stays readable."""
+    text = json.dumps(payload, indent=2, ensure_ascii=False)
+    return re.sub(r"\[\s*((?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?,\s*)*-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*\]",
+                  lambda m: "[" + re.sub(r",\s+", ", ", m.group(1)) + "]", text)

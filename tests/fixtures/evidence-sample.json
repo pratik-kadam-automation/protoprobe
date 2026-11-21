@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "kind": "protoprobe-evidence",
+  "app_version": "0.3.2",
+  "machine": {
+    "machine_type": "press",
+    "production_type": "discrete",
+    "machine_use": "stamps brackets",
+    "machine_make": "Example Machines",
+    "machine_model": "EP-200",
+    "plc_make": "siemens",
+    "plc_model": "S7-1200",
+    "hmi": "yes",
+    "ideal_cycle_s": "14"
+  },
+  "tags": [
+    {
+      "alias": "T001",
+      "data_type": "int32",
+      "role_guess": "counter",
+      "oee_use_guess": "production count",
+      "predictive_use_guess": "usage count",
+      "behaviour": "only went up: a counter",
+      "snapshots": 8,
+      "first_value": 100,
+      "last_value": 107,
+      "documented_name": "Part_count",
+      "documented_comment": "good parts",
+      "raw": {
+        "t": [],
+        "v": [
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107
+        ]
+      }
+    },
+    {
+      "alias": "T002",
+      "data_type": "bit",
+      "role_guess": "state",
+      "oee_use_guess": "run state",
+      "predictive_use_guess": "",
+      "behaviour": "changed a few times: a run state",
+      "snapshots": 6,
+      "first_value": 0,
+      "last_value": 1,
+      "documented_name": "",
+      "documented_comment": "",
+      "raw": {
+        "t": [],
+        "v": [
+          0,
+          0,
+          1,
+          1,
+          0,
+          1
+        ]
+      }
+    },
+    {
+      "alias": "T003",
+      "data_type": "int16",
+      "role_guess": "measurement",
+      "oee_use_guess": "",
+      "predictive_use_guess": "analog value, trend",
+      "behaviour": "moves up and down: an analog value",
+      "snapshots": 5,
+      "first_value": 70,
+      "last_value": 72,
+      "documented_name": "",
+      "documented_comment": "",
+      "raw": {
+        "t": [],
+        "v": [
+          70,
+          74,
+          69,
+          73,
+          72
+        ]
+      }
+    }
+  ],
+  "missing_answers": [
+    "hmi_make"
+  ],
+  "privacy": {
+    "aliases": true,
+    "redacted": [
+      "ip",
+      "email",
+      "mac",
+      "url",
+      "listed names"
+    ],
+    "raw_recordings_included": false,
+    "raw_excerpt_points": 60
+  }
+}

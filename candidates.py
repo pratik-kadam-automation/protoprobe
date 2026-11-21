@@ -29,33 +29,35 @@ def rows_from_results(results, protocol_of, spell_address, hint_of, bit_hint_of,
             for (byte, bit), series in sorted(r["bits_series"].items()):          # one row per bit that changed
                 hint = bit_hint_of({(byte, bit): series})
                 address = f"{tag['area']}{byte}.{bit}"
-                rows.append(_row(r, address, "bit", hint, series[0], series[-1], len(series)))
+                rows.append(_row(r, address, "bit", hint, series[0], series[-1], len(series), series))
             continue
         hint = hint_of(r)
         values = r.get("values") or [r.get("latest")]
-        rows.append(_row(r, spell_address(protocol, tag), tag.get("data_type", ""), hint, values[0], values[-1], len(values)))
+        rows.append(_row(r, spell_address(protocol, tag), tag.get("data_type", ""), hint, values[0], values[-1], len(values), values))
     if only_candidates:
         rows = [x for x in rows if x["oee_use"] or x["predictive_use"]]
     return rows
 
 
-def _row(r, address, data_type, hint, first, last, snapshots):
+def _row(r, address, data_type, hint, first, last, snapshots, series=None):
     kind = hint.kind if hint else "unknown"
     return {
         "connection": r["conn_name"], "address": address, "suggested_name": _safe_name(address), "data_type": data_type,
         "role": _ROLE_OF_KIND.get(kind, ""), "oee_use": hint.oee if hint else "", "predictive_use": hint.predictive if hint else "",
         "evidence": hint.text if hint else "", "snapshots": snapshots, "first_value": first, "last_value": last,
         "confidence": "low: guessed from %d snapshot(s), confirm on the machine" % snapshots if snapshots < 20 else "medium: %d snapshots, confirm on the machine" % snapshots,
+        "series": list(series) if series is not None else [],      # the values seen during the scan: used for an optional raw excerpt, not part of the CSV / JSON export
     }
 
 
 def to_csv(rows):
     out = io.StringIO()
-    writer = csv.DictWriter(out, fieldnames=COLUMNS, lineterminator="\n")
+    writer = csv.DictWriter(out, fieldnames=COLUMNS, lineterminator="\n", extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
     return out.getvalue()
 
 
 def to_json(rows, app_version=""):
-    return json.dumps({"schema": 1, "kind": "protoprobe-candidates", "app_version": app_version, "candidates": rows}, indent=2)
+    clean = [{k: v for k, v in row.items() if k != "series"} for row in rows]
+    return json.dumps({"schema": 1, "kind": "protoprobe-candidates", "app_version": app_version, "candidates": clean}, indent=2)
