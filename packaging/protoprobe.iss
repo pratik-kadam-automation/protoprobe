@@ -1,5 +1,5 @@
 ; Inno Setup script: a per-user installer (no administrator rights needed).
-; Build:  iscc /DAppVersion=0.3.3 packaging\protoprobe.iss   (after python packaging\build.py)
+; Build:  iscc /DAppVersion=0.3.4 packaging\protoprobe.iss   (after python packaging\build.py)
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
