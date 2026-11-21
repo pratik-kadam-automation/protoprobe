@@ -4064,7 +4064,7 @@ def _norm_address(text):
 
 
 class ModbusTestScreen(ttk.Frame):
-    """A ModScan-style Modbus TCP master for testing a device on site (modbus_scan.py). READ ONLY: functions 1 to 4, nothing is ever written."""
+    """A ModScan-style Modbus master (TCP over Ethernet, or RTU over a serial port) for testing a device on site (modbus_scan.py). READ ONLY: functions 1 to 4, nothing is ever written."""
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
@@ -4076,12 +4076,38 @@ class ModbusTestScreen(ttk.Frame):
         self._tid = 0
         ttk.Label(self, text="Modbus test", font=("Segoe UI", 16)).pack(anchor="w", padx=20, pady=(20, 2))
         ttk.Label(self, foreground="gray", wraplength=1000, justify="left",
-                  text="Read a Modbus TCP device the way ModScan does: see the registers in decimal, hex, binary and as 32-bit numbers, the raw bytes, "
+                  text="Read a Modbus device (Ethernet TCP or serial RTU) the way ModScan does: see the registers in decimal, hex, binary and as 32-bit numbers, the raw bytes, "
                        "the device's error in words, and find which unit IDs answer. Reading only: there is no write function in this tool.").pack(anchor="w", padx=20)
         form = ttk.Frame(self)
-        form.pack(fill="x", padx=20, pady=8)
-        self.host = self._entry(form, "IP address", "", 16)
-        self.port = self._entry(form, "Port", "502", 6)
+        form.pack(fill="x", padx=20, pady=(8, 2))
+        ttk.Label(form, text="Connection").pack(side="left")
+        self.mode = ttk.Combobox(form, state="readonly", width=36, values=["Modbus TCP (Ethernet)", "Modbus RTU (serial, RS-485 / RS-232)"])
+        self.mode.current(0)
+        self.mode.bind("<<ComboboxSelected>>", lambda e: self._mode_changed())
+        self.mode.pack(side="left", padx=(2, 12))
+        self.net = ttk.Frame(form)                       # TCP fields
+        self.net.pack(side="left")
+        self.host = self._entry(self.net, "IP address", "", 16)
+        self.port = self._entry(self.net, "Port", "502", 6)
+        self.ser = ttk.Frame(form)                       # serial fields (shown when RTU is chosen)
+        ttk.Label(self.ser, text="Port").pack(side="left")
+        self.com = ttk.Combobox(self.ser, width=12, values=[])
+        self.com.pack(side="left", padx=(2, 4))
+        ttk.Button(self.ser, text="Refresh", command=self.refresh_ports).pack(side="left", padx=(0, 10))
+        ttk.Label(self.ser, text="Baud").pack(side="left")
+        self.baud = ttk.Combobox(self.ser, width=7, values=["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"])
+        self.baud.set("9600")
+        self.baud.pack(side="left", padx=(2, 8))
+        ttk.Label(self.ser, text="Parity").pack(side="left")
+        self.parity = ttk.Combobox(self.ser, state="readonly", width=6, values=list(modbus_scan.PARITIES.values()))
+        self.parity.current(0)
+        self.parity.pack(side="left", padx=(2, 8))
+        ttk.Label(self.ser, text="Stop bits").pack(side="left")
+        self.stopbits = ttk.Combobox(self.ser, state="readonly", width=3, values=["1", "2"])
+        self.stopbits.current(0)
+        self.stopbits.pack(side="left", padx=(2, 8))
+        form = ttk.Frame(self)
+        form.pack(fill="x", padx=20, pady=(2, 4))
         self.unit = self._entry(form, "Unit ID", "1", 5)
         ttk.Label(form, text="Function").pack(side="left")
         self.fn = ttk.Combobox(form, state="readonly", width=24, values=list(modbus_scan.FUNCTIONS.values()))
@@ -4126,6 +4152,30 @@ class ModbusTestScreen(ttk.Frame):
         self._last = None
         self.after(150, self._pump)
 
+    def _is_rtu(self):
+        return self.mode.current() == 1
+
+    def _mode_changed(self):
+        if self._is_rtu():
+            self.net.pack_forget()
+            self.ser.pack(side="left")
+            self.refresh_ports()
+            if self.timeout.get() == "2":
+                self.timeout.delete(0, "end")
+                self.timeout.insert(0, "1")
+        else:
+            self.ser.pack_forget()
+            self.net.pack(side="left")
+
+    def refresh_ports(self):
+        ports = modbus_scan.list_ports()
+        self.com.configure(values=[d for d, _ in ports])
+        if ports and not self.com.get():
+            self.com.set(ports[0][0])
+        if not ports:
+            self.status.configure(text="No serial port found. Plug in the USB-RS485 adapter (its driver must be installed), then press Refresh. "
+                                       "Modbus RTU also needs the pyserial package.", foreground="#b9770e")
+
     def _entry(self, parent, label, default, width):
         ttk.Label(parent, text=label).pack(side="left")
         e = ttk.Entry(parent, width=width)
@@ -4136,17 +4186,23 @@ class ModbusTestScreen(ttk.Frame):
     def _params(self):
         try:
             fn = list(modbus_scan.FUNCTIONS)[self.fn.current()]
-            return dict(host=self.host.get().strip(), port=int(self.port.get()), unit=int(self.unit.get()), fn=fn, start=int(self.start.get()),
-                        count=int(self.count.get()), timeout=float(self.timeout.get()))
+            base = dict(unit=int(self.unit.get()), fn=fn, start=int(self.start.get()), count=int(self.count.get()), timeout=float(self.timeout.get()))
+            if self._is_rtu():
+                parity = list(modbus_scan.PARITIES)[self.parity.current()]
+                return dict(base, rtu=True, host="", port=self.com.get().strip(), baud=int(self.baud.get()), parity=parity, stopbits=int(self.stopbits.get()))
+            return dict(base, rtu=False, host=self.host.get().strip(), port=int(self.port.get()))
         except ValueError:
-            self.status.configure(text="Port, unit, start, count and timeout must be numbers.", foreground="#c0392b")
+            self.status.configure(text="Port, baud, unit, start, count and timeout must be numbers.", foreground="#c0392b")
             return None
 
     def read_once(self):
         p = self._params()
         if not p or self._busy:
             return
-        if not p["host"]:
+        if p["rtu"] and not p["port"]:
+            self.status.configure(text="Choose the serial port first (COM3 ...). Press Refresh to list them.", foreground="#c0392b")
+            return
+        if not p["rtu"] and not p["host"]:
             self.status.configure(text="Enter the device's IP address first.", foreground="#c0392b")
             return
         try:
@@ -4160,7 +4216,10 @@ class ModbusTestScreen(ttk.Frame):
 
         def work():
             try:
-                res = modbus_scan.read(p["host"], p["port"], p["unit"], p["fn"], p["start"], p["count"], p["timeout"], self.stats, tid)
+                if p["rtu"]:
+                    res = modbus_scan.read_rtu(p["port"], p["baud"], p["parity"], p["stopbits"], p["unit"], p["fn"], p["start"], p["count"], p["timeout"], self.stats)
+                else:
+                    res = modbus_scan.read(p["host"], p["port"], p["unit"], p["fn"], p["start"], p["count"], p["timeout"], self.stats, tid)
                 self._queue.put(("ok", p, res))
             except modbus_scan.ModbusError as exc:
                 self._queue.put(("error", p, exc))
@@ -4233,13 +4292,14 @@ class ModbusTestScreen(ttk.Frame):
 
     def sweep(self):
         p = self._params()
-        if not p or not p["host"]:
-            self.status.configure(text="Enter the IP address first.", foreground="#c0392b")
+        if not p or (not p["rtu"] and not p["host"]) or (p["rtu"] and not p["port"]):
+            self.status.configure(text="Enter the IP address (or choose the serial port) first.", foreground="#c0392b")
             return
-        self.status.configure(text="Asking unit IDs 1 to 247 (a silent one waits 0.6 s)...", foreground="gray")
+        self.status.configure(text="Asking unit IDs 1 to 247 (a silent one waits about 0.6 s)...", foreground="gray")
+        rtu_reader = (lambda u, fn, a, c, t: modbus_scan.read_rtu(p["port"], p["baud"], p["parity"], p["stopbits"], u, fn, a, c, t)) if p["rtu"] else None
 
         def work():
-            found = modbus_scan.sweep_units(p["host"], p["port"], range(1, 248), p["fn"], p["start"], 0.6,
+            found = modbus_scan.sweep_units(p["host"], p["port"], range(1, 248), p["fn"], p["start"], 0.6, reader=rtu_reader,
                                             progress=lambda n, total: self._queue.put(("sweep", p, f"Asking unit IDs... {n} of {total}")) if n % 20 == 0 else None)
             text = ("Unit IDs that answered: " + "; ".join(f"{u} ({why})" for u, why in found)) if found else "No unit ID answered."
             self._queue.put(("sweep", p, text))

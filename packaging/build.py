@@ -19,7 +19,7 @@ COMMON = ["--noconfirm", "--clean", "--paths", "edge-gateway",
           "--hidden-import", "drivers.modbus_driver", "--hidden-import", "drivers.s7_driver", "--hidden-import", "drivers.mc_driver",
           "--hidden-import", "drivers.opcua_driver", "--hidden-import", "drivers.bacnet_driver",
           "--collect-all", "snap7", "--collect-submodules", "pymodbus", "--collect-submodules", "asyncua",
-          "--collect-submodules", "bacpypes3", "--collect-data", "sv_ttk", "--hidden-import", "pypdf"]
+          "--collect-submodules", "bacpypes3", "--collect-data", "sv_ttk", "--hidden-import", "pypdf", "--hidden-import", "serial", "--hidden-import", "serial.tools.list_ports"]
 
 
 def app_version():

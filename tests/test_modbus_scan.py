@@ -4,6 +4,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 import unittest
 
 HERE = os.path.dirname(__file__)
@@ -129,6 +130,95 @@ class Live(unittest.TestCase):
         self.assertEqual([u for u, _ in found], [1])
 
 
+class FakeRtuDevice:
+    """Modbus RTU framing over a TCP socket (pyserial reads it through the socket:// URL). Unit 1: holding register n = 2000 + n for n < 10, exception 2 beyond.
+    `bad_crc` corrupts the CRC; other units are silent."""
+    def __init__(self, bad_crc=False):
+        self.srv = socket.socket(); self.srv.bind(("127.0.0.1", 0)); self.srv.listen(5)
+        self.port = self.srv.getsockname()[1]; self.stop = False; self.bad_crc = bad_crc
+        self.t = threading.Thread(target=self.run, daemon=True); self.t.start()
+
+    def run(self):
+        self.srv.settimeout(0.2)
+        while not self.stop:
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                continue
+            try:
+                c.settimeout(1.0)
+                req = c.recv(8)
+                if len(req) == 8 and req[0] == 1 and struct.unpack("<H", req[6:8])[0] == ms.crc16(req[:6]):
+                    unit, fn, start, count = struct.unpack(">BBHH", req[:6])
+                    body = bytes((unit, fn | 0x80, 2)) if start + count > 10 else bytes((unit, fn, count * 2)) + b"".join(struct.pack(">H", 2000 + start + i) for i in range(count))
+                    crc = ms.crc16(body) ^ (0x1234 if self.bad_crc else 0)
+                    c.sendall(body + struct.pack("<H", crc))
+                    time.sleep(0.05)
+                else:
+                    time.sleep(0.8)              # silence, like a real line with nobody answering (the client times out first)
+            except (OSError, struct.error):
+                pass
+            finally:
+                c.close()
+
+    def close(self):
+        self.stop = True; self.t.join(2); self.srv.close()
+
+
+class Rtu(unittest.TestCase):
+    def setUp(self):
+        try:
+            import serial  # noqa: F401
+        except ImportError:
+            self.skipTest("pyserial is not installed")
+        self.dev = FakeRtuDevice()
+        self.url = f"socket://127.0.0.1:{self.dev.port}"
+
+    def tearDown(self):
+        self.dev.close()
+
+    def test_crc_and_frame_are_the_textbook_ones(self):
+        self.assertEqual(ms.crc16(bytes.fromhex("01030000000A")), 0xCDC5)
+        self.assertEqual(ms.hexdump(ms.build_rtu_request(1, 3, 0, 10)), "01 03 00 00 00 0A C5 CD")
+        for fn in (5, 6, 15, 16):
+            with self.assertRaises(ValueError):
+                ms.build_rtu_request(1, fn, 0, 1)
+
+    def test_read_registers_and_stats(self):
+        st = ms.Stats()
+        r = ms.read_rtu(self.url, 9600, "N", 1, 1, 3, 2, 3, timeout=1.0, stats=st)
+        self.assertEqual(r["values"], [2002, 2003, 2004])
+        self.assertEqual(ms.hexdump(r["request"])[:11], "01 03 00 02")
+        self.assertEqual((st.sent, st.ok), (1, 1))
+
+    def test_exception_in_words(self):
+        with self.assertRaises(ms.ModbusError) as cm:
+            ms.read_rtu(self.url, 9600, "N", 1, 1, 3, 9, 5, timeout=1.0)
+        self.assertIn("Illegal data address", str(cm.exception))
+
+    def test_a_wrong_crc_is_named(self):
+        self.dev.close()
+        self.dev = FakeRtuDevice(bad_crc=True)
+        with self.assertRaises(ms.ModbusError) as cm:
+            ms.read_rtu(f"socket://127.0.0.1:{self.dev.port}", 9600, "N", 1, 1, 3, 0, 2, timeout=1.0)
+        self.assertIn("wrong CRC", str(cm.exception))
+
+    def test_silent_unit_and_an_unopenable_port(self):
+        with self.assertRaises(ms.ModbusError) as cm:
+            ms.read_rtu(self.url, 9600, "N", 1, 7, 3, 0, 1, timeout=0.4)
+        self.assertIn("no answer", str(cm.exception))
+        with self.assertRaises(ms.ModbusError) as cm:
+            ms.read_rtu("/dev/definitely-not-a-port", 9600, "N", 1, 1, 3, 0, 1)
+        self.assertIn("cannot open", str(cm.exception))
+
+    def test_unit_sweep_over_rtu(self):
+        found = ms.sweep_units(None, None, range(0, 4), reader=lambda u, fn, a, c, t: ms.read_rtu(self.url, 9600, "N", 1, u, fn, a, c, timeout=0.3))
+        self.assertEqual([u for u, _ in found], [1])
+
+    def test_ports_list_does_not_fail(self):
+        self.assertIsInstance(ms.list_ports(), list)
+
+
 class Screen(unittest.TestCase):
     def setUp(self):
         import tkinter as tk
@@ -171,6 +261,29 @@ class Screen(unittest.TestCase):
         self.assertTrue(self._wait(s, "Illegal data address"))
         self.assertIn("exceptions 1", s.stats_label.cget("text"))
         self.assertEqual([k for k in self.app.screens if k == "modbus_test"], ["modbus_test"])
+
+    def test_rtu_mode_shows_the_serial_fields_and_reads(self):
+        try:
+            import serial  # noqa: F401
+        except ImportError:
+            self.skipTest("pyserial is not installed")
+        dev = FakeRtuDevice()
+        try:
+            s = self.app.screens["modbus_test"]
+            s.mode.current(1); s._mode_changed(); self.app.update()
+            self.assertTrue(s.ser.winfo_ismapped())
+            self.assertFalse(s.net.winfo_ismapped())
+            s.com.set(f"socket://127.0.0.1:{dev.port}")
+            s.count.delete(0, "end"); s.count.insert(0, "3")
+            s.read_once()
+            self.assertTrue(self._wait(s, "OK: 3 value(s)"))
+            rows = [s.tree.item(i)["values"] for i in s.tree.get_children()]
+            self.assertEqual([r[1] for r in rows], [2000, 2001, 2002])
+            self.assertIn("01 03 00 00 00 03", s.raw.get("1.0", "end"))
+            s.mode.current(0); s._mode_changed(); self.app.update()
+            self.assertTrue(s.net.winfo_ismapped())
+        finally:
+            dev.close()
 
 
 if __name__ == "__main__":

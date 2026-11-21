@@ -6,3 +6,4 @@ python-snap7==3.3.1
 bacpypes3==0.0.110
 cryptography>=42
 pypdf==5.1.0
+pyserial==3.5
