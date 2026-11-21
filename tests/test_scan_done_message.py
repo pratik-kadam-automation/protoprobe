@@ -14,6 +14,7 @@ class ScanDone(unittest.TestCase):
 
     def tearDown(self):
         self.app.destroy()
+        __import__('gc').collect()    # finalise Tk variables on the main thread (see test_guided_s7_tag.collect_tk_garbage)
 
     def pump(self, *messages):
         self.app.start_background_scan(lambda *a: None, ())          # resets the per-scan notes; the thread does nothing

@@ -15,19 +15,19 @@ class Prefs(unittest.TestCase):
     def test_roundtrip_and_defaults(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "sub", "prefs.json")
-            self.assertEqual(prefs.load(path), {"tour_done": False})
+            self.assertEqual(prefs.load(path), {"tour_done": False, "palette": ""})
             self.assertTrue(prefs.save(path, {"tour_done": True}))
-            self.assertEqual(prefs.load(path), {"tour_done": True})
+            self.assertEqual(prefs.load(path), {"tour_done": True, "palette": ""})
 
     def test_damaged_or_newer_file_means_defaults_not_a_crash(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "prefs.json")
             with open(path, "w") as f:
                 f.write("{not json")
-            self.assertEqual(prefs.load(path), {"tour_done": False})
+            self.assertEqual(prefs.load(path), {"tour_done": False, "palette": ""})
             with open(path, "w") as f:
                 json.dump({"schema": 99, "tour_done": True}, f)
-            self.assertEqual(prefs.load(path), {"tour_done": False})
+            self.assertEqual(prefs.load(path), {"tour_done": False, "palette": ""})
 
     def test_unwritable_location_does_not_raise(self):
         # portable: a FILE used as the parent folder cannot be created on Linux or Windows (a fixed path like /proc/x is writable on Windows)

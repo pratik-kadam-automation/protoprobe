@@ -219,14 +219,19 @@ The JSON message built from your live values, and the settings for publishing it
 
 ### Settings
 
-Appearance (dark or light) and information about this version.
+The colour scheme (industrial dark and light, control room, steel blue, plant green, a high-contrast scheme and, when the sv-ttk package is installed, the Modern Windows 11 style) and information about this version.
 
-**Use it:** To change the look, or to find the version number when you report a problem.
+**Use it:** To make the screen comfortable for the room you work in (a dark control room, a bright workshop), or to find the version number when you report a problem.
 
 **Steps:**
-1. Choose Dark or Light.
+1. Open the Colour scheme list and pick one: it applies at once and is remembered.
+2. Back to the default scheme returns to Industrial dark.
 
-**Can I skip it?** Skip it unless you want to change the theme.
+**Watch out:**
+- High contrast gives the strongest text and border contrast, for bright rooms or when you need it.
+- State is always also written in words (OK, Check, Fail), never by colour alone.
+
+**Can I skip it?** Skip it unless you want a different colour scheme.
 
 ## Troubleshooting
 

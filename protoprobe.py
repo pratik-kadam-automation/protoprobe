@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.4.2"
+APP_VERSION = "0.5.0"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -66,6 +66,7 @@ import help_ui
 import prefs
 import diagnostics
 import ui_style
+import themes
 import capture
 
 NAV_ITEMS = [
@@ -1148,7 +1149,7 @@ class DashboardScreen(ttk.Frame):
         header = ttk.Frame(self)
         header.pack(fill="x", padx=20, pady=(20, 12))
         ttk.Label(header, text="Dashboard", font=("Segoe UI", 16)).pack(side="left")
-        self.status_label = ttk.Label(header, text="", foreground="gray")
+        self.status_label = ttk.Label(header, text="", foreground=themes.colour("muted"))
         self.status_label.pack(side="right")
 
         cards = ttk.Frame(self)
@@ -1186,7 +1187,7 @@ class DashboardScreen(ttk.Frame):
     def _metric_card(self, parent, label, value, col):
         card = ttk.Frame(parent, relief="ridge", borderwidth=1)
         card.grid(row=0, column=col, padx=6, sticky="nsew")
-        ttk.Label(card, text=label, foreground="gray", font=("Segoe UI", 9)).pack(
+        ttk.Label(card, text=label, foreground=themes.colour("muted"), font=("Segoe UI", 9)).pack(
             anchor="w", padx=12, pady=(10, 0)
         )
         val_label = ttk.Label(card, text=value, font=("Segoe UI", 20))
@@ -1249,7 +1250,7 @@ class OEEScreen(ttk.Frame):
             self,
             text="Reference tag names directly in your formula. Type test values by hand "
                  "to check the math -- live wiring to real polled values comes in Step 3.",
-            foreground="gray", wraplength=760, justify="left",
+            foreground=themes.colour("muted"), wraplength=760, justify="left",
         ).pack(anchor="w", padx=20, pady=(0, 12))
 
         std_frame = ttk.LabelFrame(self, text="Standard mapping (optional -- fills the formula box for you)")
@@ -1271,7 +1272,7 @@ class OEEScreen(ttk.Frame):
             formula_frame,
             text="Use +, -, *, /, parentheses, and tag names as variables. Example: "
                  "(Total_Count - Reject_Count) / Total_Count",
-            foreground="gray", wraplength=760, justify="left",
+            foreground=themes.colour("muted"), wraplength=760, justify="left",
         ).pack(anchor="w", padx=8, pady=(8, 4))
 
         self.formula_text = tk.Text(formula_frame, height=2, font=("Consolas", 10))
@@ -1292,7 +1293,7 @@ class OEEScreen(ttk.Frame):
         self.test_frame.pack(fill="x", padx=20, pady=6)
         self.test_fields_container = ttk.Frame(self.test_frame)
         self.test_fields_container.pack(fill="x", padx=8, pady=8)
-        ttk.Label(self.test_fields_container, text="Click \"Load test-value fields\" above first.", foreground="gray").pack()
+        ttk.Label(self.test_fields_container, text="Click \"Load test-value fields\" above first.", foreground=themes.colour("muted")).pack()
         ttk.Button(self.test_frame, text="Fill from live data", command=self.fill_from_live).pack(
             anchor="w", padx=8, pady=(0, 8)
         )
@@ -1314,7 +1315,7 @@ class OEEScreen(ttk.Frame):
                       "performance": "Performance", "quality": "Quality", "oee": "OEE"}
             cell = ttk.Frame(grid)
             cell.grid(row=0, column=i, padx=10)
-            ttk.Label(cell, text=titles[key], foreground="gray", font=("Segoe UI", 9)).pack()
+            ttk.Label(cell, text=titles[key], foreground=themes.colour("muted"), font=("Segoe UI", 9)).pack()
             lbl = ttk.Label(cell, text="--", font=("Segoe UI", 13))
             lbl.pack()
             self.session_labels[key] = lbl
@@ -1388,7 +1389,7 @@ class OEEScreen(ttk.Frame):
         self.test_value_entries.clear()
 
         if not tag_names:
-            ttk.Label(self.test_fields_container, text="No tag names found in the formula.", foreground="gray").pack()
+            ttk.Label(self.test_fields_container, text="No tag names found in the formula.", foreground=themes.colour("muted")).pack()
             return
 
         for name in tag_names:
@@ -1556,7 +1557,7 @@ class ConnectionsScreen(ttk.Frame):
         fields_frame.pack(fill="both", expand=True, padx=8, pady=8)
         field_entries = {}
 
-        hint_label = ttk.Label(win, text="", foreground="gray", wraplength=440, justify="left")
+        hint_label = ttk.Label(win, text="", foreground=themes.colour("muted"), wraplength=440, justify="left")
         hint_label.pack(anchor="w", padx=8, pady=(0, 4))
 
         extra = ttk.Frame(win)
@@ -1662,7 +1663,7 @@ class ConnectionsScreen(ttk.Frame):
             self.app.refresh_dashboard()
             win.destroy()
 
-        ttk.Button(bottom_bar, text="Save", command=save, style="Accent.TButton" if SV_TTK_AVAILABLE else "TButton").pack(pady=8)
+        ttk.Button(bottom_bar, text="Save", command=save, style="Accent.TButton").pack(pady=8)
 
     def remove_connection(self):
         sel = self.conn_tree.selection()
@@ -1706,7 +1707,7 @@ class ConnectionsScreen(ttk.Frame):
             for c, width in enumerate(s7_address.WIDTHS, start=1):
                 ttk.Radiobutton(grid, text=labels[area][c - 1], style="Toolbutton", width=9, variable=choice, value=f"{area}|{width}",
                                 state="normal" if s7_address.readable(width) else "disabled").grid(row=r, column=c, padx=3, pady=2)
-        ttk.Label(box, text="Byte values (IB, MB, DBB) are greyed out: ProtoProbe cannot read single bytes yet.", foreground="gray").pack(
+        ttk.Label(box, text="Byte values (IB, MB, DBB) are greyed out: ProtoProbe cannot read single bytes yet.", foreground=themes.colour("muted")).pack(
             anchor="w", padx=10)
 
         ttk.Label(box, text="2. Enter the address", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
@@ -1761,9 +1762,9 @@ class ConnectionsScreen(ttk.Frame):
             bit_entry.configure(state="normal" if width == "bit" else "disabled")
             try:
                 text = s7_address.address_text(area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0)
-                preview.configure(text=f"{text}   ({s7_address.friendly_type(type_var.get())})", foreground="#2e7d32")
+                preview.configure(text=f"{text}   ({s7_address.friendly_type(type_var.get())})", foreground=themes.colour("ok"))
             except ValueError as exc:
-                preview.configure(text=str(exc), foreground="#c62828")
+                preview.configure(text=str(exc), foreground=themes.colour("fail"))
 
         for var in (choice, db_var, byte_var, bit_var, type_var):
             var.trace_add("write", update)
@@ -1798,10 +1799,10 @@ class ConnectionsScreen(ttk.Frame):
             try:
                 tag = build()
             except ValueError as exc:
-                result.configure(text=str(exc), foreground="#c62828")
+                result.configure(text=str(exc), foreground=themes.colour("fail"))
                 return
             busy["reading"] = True
-            result.configure(text="Reading...", foreground="gray")
+            result.configure(text="Reading...", foreground=themes.colour("muted"))
 
             def worker():
                 test_queue.put(read_tag_once(conn, tag))
@@ -1819,12 +1820,12 @@ class ConnectionsScreen(ttk.Frame):
                 busy["reading"] = False
                 stamp = time.strftime("%H:%M:%S")
                 if error is None:
-                    value_label.configure(text=str(show_value(value)), foreground="#2e7d32")
-                    result.configure(text=f"\u25cf Read OK  ({stamp})", foreground="#2e7d32")
+                    value_label.configure(text=str(show_value(value)), foreground=themes.colour("ok"))
+                    result.configure(text=f"\u25cf Read OK  ({stamp})", foreground=themes.colour("ok"))
                 else:
                     hint = explain_s7_error(error)
-                    value_label.configure(text="--", foreground="#c62828")
-                    result.configure(text=f"\u25cf Read failed ({stamp}): {error}" + (f"\n{hint}" if hint else ""), foreground="#c62828")
+                    value_label.configure(text="--", foreground=themes.colour("fail"))
+                    result.configure(text=f"\u25cf Read failed ({stamp}): {error}" + (f"\n{hint}" if hint else ""), foreground=themes.colour("fail"))
                 if keep_var.get():
                     win.after(1000, test_read)
 
@@ -1867,7 +1868,7 @@ class ConnectionsScreen(ttk.Frame):
             for colour, hex_colour in HEALTH_COLOURS.items():
                 watch.tag_configure(colour, foreground=hex_colour)
             watch.pack(fill="both", expand=True)
-            watch_status = ttk.Label(side, text="Press 'Add to list' to put the address on the left into the list.", foreground="gray",
+            watch_status = ttk.Label(side, text="Press 'Add to list' to put the address on the left into the list.", foreground=themes.colour("muted"),
                                      wraplength=420, justify="left")
             watch_status.pack(anchor="w", pady=(6, 0))
             watched = []                             # tag dicts, in the order of the list
@@ -1879,48 +1880,48 @@ class ConnectionsScreen(ttk.Frame):
                 try:
                     tag = build()
                 except ValueError as exc:
-                    watch_status.configure(text=str(exc), foreground="#c62828")
+                    watch_status.configure(text=str(exc), foreground=themes.colour("fail"))
                     return
                 area, width = current()
                 address = s7_address.address_text(area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0)
                 if any(t["name"] == tag["name"] for t in watched):
                     tag["name"] = f"{tag['name']}_{address}"
                 if any(t["name"] == tag["name"] for t in watched):
-                    watch_status.configure(text=f"'{tag['name']}' is already in the list.", foreground="#c62828")
+                    watch_status.configure(text=f"'{tag['name']}' is already in the list.", foreground=themes.colour("fail"))
                     return
                 tag["_address"] = address
                 watched.append(tag)
                 watch.insert("", "end", iid=tag["name"], tags=("grey",), values=(tag["name"], address, "", "--"))
-                watch_status.configure(text=f"{len(watched)} value(s) in the list.", foreground="gray")
+                watch_status.configure(text=f"{len(watched)} value(s) in the list.", foreground=themes.colour("muted"))
                 name_var.set(f"Tag{len(conn.tags) + len(watched) + 1}")
 
             def load_selected(*_):
                 sel = watch.selection()
                 if sel:
                     fill_from(next(t for t in watched if t["name"] == sel[0]))
-                    watch_status.configure(text="Loaded into the form: change it, then press 'Update selected'.", foreground="gray")
+                    watch_status.configure(text="Loaded into the form: change it, then press 'Update selected'.", foreground=themes.colour("muted"))
 
             def update_selected():
                 sel = watch.selection()
                 if not sel:
-                    watch_status.configure(text="Select a row in the list first (double-click loads it into the form).", foreground="#c62828")
+                    watch_status.configure(text="Select a row in the list first (double-click loads it into the form).", foreground=themes.colour("fail"))
                     return
                 try:
                     tag = build()
                 except ValueError as exc:
-                    watch_status.configure(text=str(exc), foreground="#c62828")
+                    watch_status.configure(text=str(exc), foreground=themes.colour("fail"))
                     return
                 area, width = current()
                 index = next(i for i, t in enumerate(watched) if t["name"] == sel[0])
                 if any(t["name"] == tag["name"] for i, t in enumerate(watched) if i != index):
-                    watch_status.configure(text=f"'{tag['name']}' is already in the list.", foreground="#c62828")
+                    watch_status.configure(text=f"'{tag['name']}' is already in the list.", foreground=themes.colour("fail"))
                     return
                 tag["_address"] = s7_address.address_text(area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0)
                 watched[index] = tag
                 watch.delete(sel[0])
                 watch.insert("", index, iid=tag["name"], tags=("grey",), values=(tag["name"], tag["_address"], "", "--"))
                 watch.selection_set(tag["name"])
-                watch_status.configure(text=f"Updated: {tag['name']} is now {tag['_address']}.", foreground="gray")
+                watch_status.configure(text=f"Updated: {tag['name']} is now {tag['_address']}.", foreground=themes.colour("muted"))
 
             watch.bind("<Double-1>", load_selected)
             watch.bind("<Return>", load_selected)          # the same from the keyboard
@@ -1958,7 +1959,7 @@ class ConnectionsScreen(ttk.Frame):
                                    values=(tag["name"], tag["_address"], show_value(value) if error is None else str(error).replace("Read operation failed: ", ""),
                                    "Good" if error is None else "Bad"))
                     watch_status.configure(text=f"\u25cf {good} of {len(watched)} read OK  ({time.strftime('%H:%M:%S')})",
-                                           foreground="#2e7d32" if good == len(watched) else "#e0a100" if good else "#c62828")
+                                           foreground=themes.colour("ok") if good == len(watched) else themes.colour("warn") if good else themes.colour("fail"))
                     if list_keep.get():
                         win.after(1000, read_list)
 
@@ -1973,7 +1974,7 @@ class ConnectionsScreen(ttk.Frame):
                     added += 1
                 if added:
                     on_saved()
-                watch_status.configure(text=f"{added} tag(s) added to the connection.", foreground="gray")
+                watch_status.configure(text=f"{added} tag(s) added to the connection.", foreground=themes.colour("muted"))
 
             row = ttk.Frame(side)
             row.pack(fill="x", pady=(8, 0))
@@ -2057,7 +2058,7 @@ class ConnectionsScreen(ttk.Frame):
                 hint_frame.pack(fill="x", padx=8, pady=(8, 0))
                 for label in hints:
                     ttk.Label(hint_frame, text=FIELD_OPTIONS[label]["hint"], wraplength=400,
-                              foreground="gray", font=("Segoe UI", 8), justify="left").pack(anchor="w", pady=1)
+                              foreground=themes.colour("muted"), font=("Segoe UI", 8), justify="left").pack(anchor="w", pady=1)
 
             if conn.protocol == "opcua":
                 ttk.Button(
@@ -2167,7 +2168,7 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(btn_row, text="Import from CSV...", command=import_csv).pack(side="left", padx=2)
         ttk.Label(
             win, text=f"CSV columns required: name, {', '.join(l for l, _ in TAG_FIELDS[conn.protocol])}",
-            foreground="gray", wraplength=560,
+            foreground=themes.colour("muted"), wraplength=560,
         ).pack(anchor="w", padx=8, pady=(0, 6))
 
         tree.bind("<Double-1>", lambda e: edit_selected())
@@ -2188,12 +2189,12 @@ class ConnectionsScreen(ttk.Frame):
         win = tk.Toplevel(self)
         win.title(f"Import tags -- {conn.name}")
         win.geometry("1000x560")
-        ttk.Label(win, wraplength=960, foreground="gray", justify="left",
+        ttk.Label(win, wraplength=960, foreground=themes.colour("muted"), justify="left",
                   text="ProtoProbe found LINES with an address in this file. Every row is a guess to confirm on the machine: it reads text only, "
                        "a PDF cannot be turned back into ladder logic, and a scanned PDF has no text. Rows that do not fit this connection's "
                        "protocol cannot be added.").pack(anchor="w", padx=12, pady=(10, 4))
         msg = ttk.Label(win, text=res["error"] or f"{len(res['candidates'])} candidate(s) in {os.path.basename(path)}",
-                        foreground="#c0392b" if res["error"] else "gray")
+                        foreground=themes.colour("fail") if res["error"] else "gray")
         msg.pack(anchor="w", padx=12)
         cols = ("name", "address", "type", "role", "fits", "comment", "note")
         tree = ttk.Treeview(win, columns=cols, show="headings", selectmode="extended")
@@ -2250,7 +2251,7 @@ class ConnectionsScreen(ttk.Frame):
         win.title(f"Capture traffic -- {conn.name} ({ip})")
         win.geometry("900x620")
         ttk.Label(win, text="1) Start  2) do the read (Send a test read, or Read a Value / Scan in ProtoProbe)  3) Stop. Needs administrator on Windows. "
-                  "Nothing is sent by the capture itself.", wraplength=860, foreground="gray").pack(anchor="w", padx=8, pady=(8, 0))
+                  "Nothing is sent by the capture itself.", wraplength=860, foreground=themes.colour("muted")).pack(anchor="w", padx=8, pady=(8, 0))
         packets_box = tk.Text(win, wrap="none", font=("Consolas", 9), height=18)
         packets_box.pack(fill="both", expand=True, padx=8, pady=6)
         ttk.Label(win, text="What the packets say").pack(anchor="w", padx=8)
@@ -2433,7 +2434,7 @@ class ConnectionsScreen(ttk.Frame):
                 raw = e.get().strip()
                 tag[k] = raw if k in FIELD_OPTIONS else coerce(raw)
             busy["reading"] = True
-            result.configure(text="Reading...", foreground="gray")
+            result.configure(text="Reading...", foreground=themes.colour("muted"))
             threading.Thread(target=lambda: results.put(read_tag_once(conn, tag)), daemon=True).start()
 
             def check():
@@ -2447,11 +2448,11 @@ class ConnectionsScreen(ttk.Frame):
                 busy["reading"] = False
                 stamp = time.strftime("%H:%M:%S")
                 if error is None:
-                    value_label.configure(text=str(show_value(value)), foreground="#2e7d32")
-                    result.configure(text=f"\u25cf Read OK  ({stamp})", foreground="#2e7d32")
+                    value_label.configure(text=str(show_value(value)), foreground=themes.colour("ok"))
+                    result.configure(text=f"\u25cf Read OK  ({stamp})", foreground=themes.colour("ok"))
                 else:
-                    value_label.configure(text="--", foreground="#c62828")
-                    result.configure(text=f"\u25cf Read failed ({stamp}): {error}", foreground="#c62828")
+                    value_label.configure(text="--", foreground=themes.colour("fail"))
+                    result.configure(text=f"\u25cf Read failed ({stamp}): {error}", foreground=themes.colour("fail"))
                 if keep_var.get():
                     win.after(1000, read_now)
 
@@ -2492,7 +2493,7 @@ class ConnectionsScreen(ttk.Frame):
                  "tab -- you can close this window right after clicking Start and check "
                  "results whenever you like. Assumes int16 for the scan itself; check and "
                  "fix the data type after adding a tag if it's actually 32-bit or float.",
-            wraplength=600, foreground="gray", justify="left",
+            wraplength=600, foreground=themes.colour("muted"), justify="left",
         ).pack(anchor="w", padx=10, pady=(10, 10))
 
         ttk.Button(win, text="Read one value instead...", command=lambda: self.open_quick_read(win)).pack(anchor="w", padx=10, pady=(0, 4))
@@ -2516,7 +2517,7 @@ class ConnectionsScreen(ttk.Frame):
             preset_cb = ttk.Combobox(preset_row, values=["(none)"] + [p.label for p in presets], state="readonly", width=56)
             preset_cb.set("(none)")
             preset_cb.pack(side="left", padx=6)
-            preset_note = ttk.Label(win, text="", foreground="gray", wraplength=600, justify="left")
+            preset_note = ttk.Label(win, text="", foreground=themes.colour("muted"), wraplength=600, justify="left")
             preset_note.pack(anchor="w", padx=10)
 
         # ---- Section 1: single area/range (a quick, targeted check) ----
@@ -2553,7 +2554,7 @@ class ConnectionsScreen(ttk.Frame):
             e.pack()
             range_entries[label] = e
 
-        single_status = ttk.Label(single_frame, text="", foreground="gray")
+        single_status = ttk.Label(single_frame, text="", foreground=themes.colour("muted"))
 
         if conn.protocol == "s7comm":
             ttk.Label(
@@ -2561,7 +2562,7 @@ class ConnectionsScreen(ttk.Frame):
                           "in the results to make bit tags from them. Markers (M) have no wiring to "
                           "check against, so scanning them is the way to find what moves. "
                           "db_number is ignored unless area = DB.",
-                wraplength=600, foreground="gray", justify="left",
+                wraplength=600, foreground=themes.colour("muted"), justify="left",
             ).pack(anchor="w", padx=8, pady=(0, 4))
 
             discover_frame = ttk.Frame(single_frame)
@@ -2574,7 +2575,7 @@ class ConnectionsScreen(ttk.Frame):
             discover_btn.pack(side="left", padx=8)
             # On its own full-width line: the messages (an error and its hint) are long and were cut off at the window edge when they
             # shared the row with the button.
-            discover_status = ttk.Label(single_frame, text="", foreground="gray", wraplength=590, justify="left")
+            discover_status = ttk.Label(single_frame, text="", foreground=themes.colour("muted"), wraplength=590, justify="left")
             discover_status.pack(anchor="w", padx=8, pady=(0, 2))
 
             discovered_list = tk.Listbox(single_frame, height=3, font=("Consolas", 9))
@@ -2589,7 +2590,7 @@ class ConnectionsScreen(ttk.Frame):
                 range_entries["db_number"].insert(0, db_num)
 
             discovered_list.bind("<Double-1>", lambda e: use_discovered_db())
-            ttk.Label(single_frame, text="Double-click a discovered DB above to use it.", foreground="gray").pack(
+            ttk.Label(single_frame, text="Double-click a discovered DB above to use it.", foreground=themes.colour("muted")).pack(
                 anchor="w", padx=8, pady=(0, 6)
             )
 
@@ -2676,7 +2677,7 @@ class ConnectionsScreen(ttk.Frame):
         full_frame = ttk.LabelFrame(win, text="Scan the whole PLC (all common areas, one background job)")
         full_frame.pack(fill="x", padx=10, pady=6)
 
-        full_status = ttk.Label(full_frame, text="", foreground="gray")
+        full_status = ttk.Label(full_frame, text="", foreground=themes.colour("muted"))
         checkbox_vars = {}
 
         if conn.protocol == "mc_protocol_3e":
@@ -2705,7 +2706,7 @@ class ConnectionsScreen(ttk.Frame):
             ttk.Label(
                 full_frame, text="DB auto-discovers which DB numbers exist first (a DB with optimized "
                           "block access cannot be read and is reported). I and Q rows show bits.",
-                wraplength=600, foreground="gray", justify="left",
+                wraplength=600, foreground=themes.colour("muted"), justify="left",
             ).pack(anchor="w", padx=8, pady=(2, 0))
             max_row = ttk.Frame(full_frame)
             max_row.pack(fill="x", padx=8, pady=6)
@@ -2807,7 +2808,7 @@ class ConnectionsScreen(ttk.Frame):
         win.geometry("480x420")
         win.grab_set()
 
-        path_label = ttk.Label(win, text="Objects (root)", foreground="gray")
+        path_label = ttk.Label(win, text="Objects (root)", foreground=themes.colour("muted"))
         path_label.pack(anchor="w", padx=8, pady=(8, 0))
 
         listbox = tk.Listbox(win, font=("Consolas", 10))
@@ -2889,10 +2890,10 @@ class ConnectionsScreen(ttk.Frame):
             text="Untested against real hardware -- if this errors out, that's the thing to "
                  "debug, not necessarily your PLC config. Reads the device's own object list "
                  "and names directly from the wire.",
-            wraplength=520, foreground="gray", justify="left",
+            wraplength=520, foreground=themes.colour("muted"), justify="left",
         ).pack(anchor="w", padx=8, pady=(8, 4))
 
-        status_label = ttk.Label(win, text="", foreground="gray")
+        status_label = ttk.Label(win, text="", foreground=themes.colour("muted"))
         status_label.pack(anchor="w", padx=8)
 
         listbox = tk.Listbox(win, font=("Consolas", 10))
@@ -3117,10 +3118,10 @@ class LiveValuesScreen(ttk.Frame):
         self.out_text = tk.Text(self, height=9, font=("Consolas", 9))
         self.app.dark_aware_texts.append(self.out_text)
         self.out_text.pack(fill="x", padx=20, pady=(0, 4))
-        self.out_warn = ttk.Label(self, text="", foreground="#c0392b", wraplength=900, justify="left")
+        self.out_warn = ttk.Label(self, text="", foreground=themes.colour("fail"), wraplength=900, justify="left")
         self.out_warn.pack(anchor="w", padx=20)
         ttk.Label(self, text="Double-click a row to change that tag's register, address, data type, scale or unit (reading only: nothing is written to the PLC).",
-                  foreground="gray").pack(anchor="w", padx=20, pady=(0, 8))
+                  foreground=themes.colour("muted")).pack(anchor="w", padx=20, pady=(0, 8))
 
     def _selected_tags(self):
         found = []
@@ -3218,7 +3219,7 @@ class LiveValuesScreen(ttk.Frame):
             else:
                 ttk.Entry(frame, textvariable=vars_[key], width=20).pack(side="left")
         ttk.Label(win, text="The value shown is: raw value x scale + offset. A 32-bit type reads 4 bytes from the same address.",
-                  foreground="gray", wraplength=390, justify="left").pack(anchor="w", padx=10, pady=(8, 0))
+                  foreground=themes.colour("muted"), wraplength=390, justify="left").pack(anchor="w", padx=10, pady=(8, 0))
 
         def save():
             try:
@@ -3318,7 +3319,7 @@ class OutputScreen(ttk.Frame):
             text='Edit this JSON freely. Placeholders "__DEPLOYMENT_ID__", "__GATEWAY_ID__", "__MACHINE_ID__" (from the Commissioning '
                  'answers), "__DEVICE_ID__", "__TIMESTAMP__" and "__METRICS__" get replaced wherever you put them. If you ticked tags on Live '
                  'values / Scan results, __METRICS__ holds only those, under the names you gave.',
-            wraplength=1000, foreground="gray", justify="left",
+            wraplength=1000, foreground=themes.colour("muted"), justify="left",
         ).pack(anchor="w", padx=4, pady=(4, 0))
 
         self.template_text = tk.Text(tmpl_frame, height=8, font=("Consolas", 9))
@@ -3377,7 +3378,7 @@ class OutputScreen(ttk.Frame):
         ttk.Checkbutton(mqtt_frame, text="Verify the broker's certificate (recommended)", variable=self.mqtt_verify).pack(anchor="w", padx=8)
 
         ttk.Label(mqtt_frame, text="TLS 1.0 / 1.1 are old and insecure; a modern system may refuse them. Switching the certificate check off proves nothing about "
-                                   "who answers: use it only for a test broker.", foreground="gray", wraplength=1000, justify="left").pack(anchor="w", padx=4)
+                                   "who answers: use it only for a test broker.", foreground=themes.colour("muted"), wraplength=1000, justify="left").pack(anchor="w", padx=4)
         ttk.Label(mqtt_frame, text="CA cert (required for AWS IoT Core: AmazonRootCA1.pem)").pack(anchor="w", padx=4)
         self.mqtt_ca_cert = self._file_picker_row(mqtt_frame)
         ttk.Label(mqtt_frame, text="Client cert (mTLS device certificate)").pack(anchor="w", padx=4)
@@ -3393,7 +3394,7 @@ class OutputScreen(ttk.Frame):
         self.mqtt_disconnect_btn.pack(side="left", padx=4)
         self.mqtt_publish_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(mctrl, text="Actually publish each merge cycle", variable=self.mqtt_publish_var).pack(side="left", padx=12)
-        self.mqtt_status_label = ttk.Label(mctrl, text="Status: not connected", foreground="gray", wraplength=480, justify="right")
+        self.mqtt_status_label = ttk.Label(mctrl, text="Status: not connected", foreground=themes.colour("muted"), wraplength=480, justify="right")
         self.mqtt_status_label.pack(side="right", padx=4)
 
         log_frame = ttk.LabelFrame(root, text="JSON send log")
@@ -3530,7 +3531,7 @@ class OutputScreen(ttk.Frame):
 
     def mqtt_disconnect(self):
         self.app.mqtt.disconnect()
-        self.mqtt_status_label.configure(text="Status: not connected", foreground="gray")
+        self.mqtt_status_label.configure(text="Status: not connected", foreground=themes.colour("muted"))
         self.mqtt_connect_btn.configure(state="normal")
         self.mqtt_disconnect_btn.configure(state="disabled")
 
@@ -3607,12 +3608,12 @@ class ScanResultsScreen(ttk.Frame):
         header = ttk.Frame(self)
         header.pack(fill="x", padx=20, pady=(20, 4))
         ttk.Label(header, text="Scan results", font=("Segoe UI", 16)).pack(side="left")
-        self.status_label = ttk.Label(header, text="", foreground="gray")
+        self.status_label = ttk.Label(header, text="", foreground=themes.colour("muted"))
         self.status_label.pack(side="right")
         self.progress_bar = ttk.Progressbar(header, length=150, maximum=1.0, mode="determinate")
         self.progress_bar.pack(side="right", padx=(0, 10))
         # the reason a scan read nothing (or only part): its own wrapped line, because the status at the top right is short and gets cut off
-        self.problem_label = ttk.Label(self, text="", foreground="#b9770e", wraplength=1000, justify="left")
+        self.problem_label = ttk.Label(self, text="", foreground=themes.colour("warn"), wraplength=1000, justify="left")
         self.problem_label.pack(anchor="w", padx=20, pady=(0, 4))
 
         ttk.Label(
@@ -3626,7 +3627,7 @@ class ScanResultsScreen(ttk.Frame):
                  "that happens to look plausible is common by pure coincidence across thousands "
                  "of addresses and isn't real evidence on its own. Still just a hint worth "
                  "checking, not a guaranteed answer.",
-            foreground="gray", wraplength=1000,
+            foreground=themes.colour("muted"), wraplength=1000,
         ).pack(anchor="w", padx=20, pady=(0, 8))
 
         btn_row = ttk.Frame(self)
@@ -3654,7 +3655,7 @@ class ScanResultsScreen(ttk.Frame):
                  "uint32, and float32 (both byte orders) for that address paired with the next "
                  "one. Searches the last scan's snapshot -- if the real value has moved since "
                  "then, re-run the scan first.",
-            foreground="gray", wraplength=1000,
+            foreground=themes.colour("muted"), wraplength=1000,
         ).pack(anchor="w", padx=20, pady=(0, 4))
         self.search_target = None
         self.search_tolerance = 0.5
@@ -3671,7 +3672,7 @@ class ScanResultsScreen(ttk.Frame):
         hint_box.pack(side="left")
         hint_box.bind("<<ComboboxSelected>>", lambda e: self.refresh())
         ttk.Label(use_frame, text="Suggestions are guesses from how a value moved during the scan: confirm them by running the machine.",
-                  foreground="gray").pack(side="left", padx=12)
+                  foreground=themes.colour("muted")).pack(side="left", padx=12)
 
         columns = ("connection", "job", "type", "address", "changed", "raw", "latest", "float_guess", "hint", "match")
         self.tree = ttk.Treeview(self, columns=columns, show="headings", height=18)
@@ -3924,7 +3925,7 @@ class NetworkToolsScreen(ttk.Frame):
         ttk.Label(
             self, text="Find PLCs and check which industrial ports are open, without a "
                        "separate tool like Advanced IP Scanner or ModScan.",
-            foreground="gray", wraplength=900,
+            foreground=themes.colour("muted"), wraplength=900,
         ).pack(anchor="w", padx=20, pady=(0, 12))
 
         ip_frame = ttk.LabelFrame(self, text="IP scanner")
@@ -3946,7 +3947,7 @@ class NetworkToolsScreen(ttk.Frame):
         self.ip_end_entry.pack(side="left", padx=(4, 12))
         self.ip_scan_btn = ttk.Button(row, text="Scan", command=self.start_ip_scan)
         self.ip_scan_btn.pack(side="left", padx=4)
-        self.ip_progress_label = ttk.Label(row, text="", foreground="gray")
+        self.ip_progress_label = ttk.Label(row, text="", foreground=themes.colour("muted"))
         self.ip_progress_label.pack(side="left", padx=12)
 
         self.ip_tree = ttk.Treeview(ip_frame, columns=("ip", "status", "mac", "vendor", "hint"), show="headings", height=8)
@@ -3956,7 +3957,7 @@ class NetworkToolsScreen(ttk.Frame):
             self.ip_tree.column(col, width=width, anchor=anchor)
         self.ip_tree.pack(fill="both", expand=True, padx=8, pady=8)
         self.ip_note = ttk.Label(ip_frame, text="After the sweep the PC's ARP table is read too: a device that ignores ping still answers ARP, so it shows as 'ARP only'. "
-                                 "Needs no administrator rights.", foreground="gray", wraplength=900, justify="left")
+                                 "Needs no administrator rights.", foreground=themes.colour("muted"), wraplength=900, justify="left")
         self.ip_note.pack(anchor="w", padx=8, pady=(0, 6))
 
         port_frame = ttk.LabelFrame(self, text="Port scanner")
@@ -4143,7 +4144,7 @@ class PlaceholderScreen(ttk.Frame):
     def __init__(self, parent, title, note):
         super().__init__(parent)
         ttk.Label(self, text=title, font=("Segoe UI", 16)).pack(anchor="w", padx=20, pady=(20, 4))
-        ttk.Label(self, text=note, foreground="gray", wraplength=760, justify="left").pack(
+        ttk.Label(self, text=note, foreground=themes.colour("muted"), wraplength=760, justify="left").pack(
             anchor="w", padx=20, pady=(0, 12)
         )
 
@@ -4162,13 +4163,13 @@ class EvidenceScreen(ttk.Frame):
         self.payload = None
         self.alias_map = {}
         ttk.Label(self, text="Evidence for the AI review", font=("Segoe UI", 16)).pack(anchor="w", padx=20, pady=(20, 2))
-        ttk.Label(self, foreground="gray", wraplength=1000, justify="left",
+        ttk.Label(self, foreground=themes.colour("muted"), wraplength=1000, justify="left",
                   text="Builds the file you upload on the dashboard (Commissioning page > AI review). It holds the machine facts from the Commissioning questions and how each "
                        "candidate tag behaved in the scan. Names, IP addresses, e-mails and IDs are removed, and tags become T001, T002... Nothing is sent from here: you "
                        "read the exact text below, confirm it is clean, and save the file yourself.").pack(anchor="w", padx=20)
         top = ttk.Frame(self)
         top.pack(fill="x", padx=20, pady=8)
-        self.missing_label = ttk.Label(top, text="", foreground="#b9770e", wraplength=640, justify="left")
+        self.missing_label = ttk.Label(top, text="", foreground=themes.colour("warn"), wraplength=640, justify="left")
         self.missing_label.pack(side="left", fill="x", expand=True)
         ttk.Button(top, text="Open Commissioning questions", command=lambda: self.app.show_screen("commission")).pack(side="right")
         names = ttk.Frame(self)
@@ -4196,7 +4197,7 @@ class EvidenceScreen(ttk.Frame):
         self.save_btn.pack(side="right")
         self.copy_btn = ttk.Button(bar, text="Copy", command=self.copy, state="disabled")
         self.copy_btn.pack(side="right", padx=6)
-        self.status = ttk.Label(self, text="", foreground="gray", wraplength=1000, justify="left")
+        self.status = ttk.Label(self, text="", foreground=themes.colour("muted"), wraplength=1000, justify="left")
         self.status.pack(anchor="w", padx=20, pady=(4, 0))
         self.text = tk.Text(self, font=("Consolas", 9), height=18)
         self.app.dark_aware_texts.append(self.text)
@@ -4246,10 +4247,10 @@ class EvidenceScreen(ttk.Frame):
         self.approved.set(False)
         self._sync_buttons()
         if rows:
-            self.status.configure(text=f"{len(rows)} candidate tag(s). Read the whole text below, then tick the box.", foreground="gray")
+            self.status.configure(text=f"{len(rows)} candidate tag(s). Read the whole text below, then tick the box.", foreground=themes.colour("muted"))
         else:
             self.status.configure(text="No candidate tag yet: scan the machine while it runs (Scan results), then press the button again. The file would hold only the answers.",
-                                  foreground="#b9770e")
+                                  foreground=themes.colour("warn"))
 
     def _sync_buttons(self):
         ok = bool(self.payload) and self.approved.get()
@@ -4313,7 +4314,7 @@ class ModbusTestScreen(ttk.Frame):
         self._stop_sweep = False
         self._tid = 0
         ttk.Label(self, text="Modbus test", font=("Segoe UI", 16)).pack(anchor="w", padx=20, pady=(20, 2))
-        ttk.Label(self, foreground="gray", wraplength=1000, justify="left",
+        ttk.Label(self, foreground=themes.colour("muted"), wraplength=1000, justify="left",
                   text="Read a Modbus device (Ethernet TCP or serial RTU) the way ModScan does: see the registers in decimal, hex, binary and as 32-bit numbers, the raw bytes, "
                        "the device's error in words, and find which unit IDs answer. Reading only: there is no write function in this tool.").pack(anchor="w", padx=20)
         form = ttk.Frame(self)
@@ -4374,9 +4375,9 @@ class ModbusTestScreen(ttk.Frame):
         ttk.Button(btns, text="Find unit IDs (1-247)", command=self.sweep).pack(side="left")
         ttk.Button(btns, text="Reset counters", command=self.reset_stats).pack(side="left", padx=6)
         ttk.Button(btns, text="Copy table", command=self.copy_table).pack(side="right")
-        self.status = ttk.Label(self, text="", foreground="gray", wraplength=1000, justify="left")
+        self.status = ttk.Label(self, text="", foreground=themes.colour("muted"), wraplength=1000, justify="left")
         self.status.pack(anchor="w", padx=20)
-        self.stats_label = ttk.Label(self, text=self.stats.line(), foreground="gray")
+        self.stats_label = ttk.Label(self, text=self.stats.line(), foreground=themes.colour("muted"))
         self.stats_label.pack(anchor="w", padx=20)
         cols = ("address", "unsigned", "signed", "hex", "binary", "uint32", "int32", "float32")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
@@ -4412,7 +4413,7 @@ class ModbusTestScreen(ttk.Frame):
             self.com.set(ports[0][0])
         if not ports:
             self.status.configure(text="No serial port found. Plug in the USB-RS485 adapter (its driver must be installed), then press Refresh. "
-                                       "Modbus RTU also needs the pyserial package.", foreground="#b9770e")
+                                       "Modbus RTU also needs the pyserial package.", foreground=themes.colour("warn"))
 
     def _entry(self, parent, label, default, width):
         ttk.Label(parent, text=label).pack(side="left")
@@ -4430,7 +4431,7 @@ class ModbusTestScreen(ttk.Frame):
                 return dict(base, rtu=True, host="", port=self.com.get().strip(), baud=int(self.baud.get()), parity=parity, stopbits=int(self.stopbits.get()))
             return dict(base, rtu=False, host=self.host.get().strip(), port=int(self.port.get()))
         except ValueError:
-            self.status.configure(text="Port, baud, unit, start, count and timeout must be numbers.", foreground="#c0392b")
+            self.status.configure(text="Port, baud, unit, start, count and timeout must be numbers.", foreground=themes.colour("fail"))
             return None
 
     def read_once(self):
@@ -4438,15 +4439,15 @@ class ModbusTestScreen(ttk.Frame):
         if not p or self._busy:
             return
         if p["rtu"] and not p["port"]:
-            self.status.configure(text="Choose the serial port first (COM3 ...). Press Refresh to list them.", foreground="#c0392b")
+            self.status.configure(text="Choose the serial port first (COM3 ...). Press Refresh to list them.", foreground=themes.colour("fail"))
             return
         if not p["rtu"] and not p["host"]:
-            self.status.configure(text="Enter the device's IP address first.", foreground="#c0392b")
+            self.status.configure(text="Enter the device's IP address first.", foreground=themes.colour("fail"))
             return
         try:
             modbus_scan.build_request(1, p["unit"], p["fn"], p["start"], p["count"])
         except ValueError as exc:
-            self.status.configure(text=str(exc), foreground="#c0392b")
+            self.status.configure(text=str(exc), foreground=themes.colour("fail"))
             return
         self._busy = True
         self._tid += 1
@@ -4468,7 +4469,7 @@ class ModbusTestScreen(ttk.Frame):
             while True:
                 kind, p, payload = self._queue.get_nowait()
                 if kind == "sweep":
-                    self.status.configure(text=payload, foreground="gray")
+                    self.status.configure(text=payload, foreground=themes.colour("muted"))
                     continue
                 self._busy = False
                 if kind == "ok":
@@ -4477,7 +4478,7 @@ class ModbusTestScreen(ttk.Frame):
                     self._show_raw(payload["request"], payload["response"])
                     self._redraw()
                 else:
-                    self.status.configure(text=str(payload), foreground="#c0392b")
+                    self.status.configure(text=str(payload), foreground=themes.colour("fail"))
                     self._show_raw(getattr(payload, "request", b""), getattr(payload, "response", b""))
                 self.stats_label.configure(text=self.stats.line())
         except queue.Empty:
@@ -4531,9 +4532,9 @@ class ModbusTestScreen(ttk.Frame):
     def sweep(self):
         p = self._params()
         if not p or (not p["rtu"] and not p["host"]) or (p["rtu"] and not p["port"]):
-            self.status.configure(text="Enter the IP address (or choose the serial port) first.", foreground="#c0392b")
+            self.status.configure(text="Enter the IP address (or choose the serial port) first.", foreground=themes.colour("fail"))
             return
-        self.status.configure(text="Asking unit IDs 1 to 247 (a silent one waits about 0.6 s)...", foreground="gray")
+        self.status.configure(text="Asking unit IDs 1 to 247 (a silent one waits about 0.6 s)...", foreground=themes.colour("muted"))
         rtu_reader = (lambda u, fn, a, c, t: modbus_scan.read_rtu(p["port"], p["baud"], p["parity"], p["stopbits"], u, fn, a, c, t)) if p["rtu"] else None
 
         def work():
@@ -4552,34 +4553,57 @@ class SettingsScreen(ttk.Frame):
 
         theme_frame = ttk.LabelFrame(self, text="Appearance")
         theme_frame.pack(fill="x", padx=20, pady=6)
-
-        if SV_TTK_AVAILABLE:
-            self.theme_var = tk.StringVar(value=self.app.current_theme)
-            row = ttk.Frame(theme_frame)
-            row.pack(fill="x", padx=8, pady=8)
-            ttk.Radiobutton(row, text="Dark", variable=self.theme_var, value="dark",
-                            command=self._on_theme_change).pack(side="left", padx=(0, 12))
-            ttk.Radiobutton(row, text="Light", variable=self.theme_var, value="light",
-                            command=self._on_theme_change).pack(side="left")
-        else:
-            ttk.Label(
-                theme_frame,
-                text="Install the sv-ttk package for the full dark/light theme:\n"
-                     "pip install sv-ttk\n\nThen restart ProtoProbe.",
-                foreground="gray", justify="left",
-            ).pack(anchor="w", padx=8, pady=8)
+        ttk.Label(theme_frame, text="Colour scheme", foreground=themes.colour("muted")).pack(anchor="w", padx=8, pady=(8, 2))
+        self._scheme_choices = themes.available(SV_TTK_AVAILABLE)
+        self.scheme_var = tk.StringVar(value=dict(self._scheme_choices).get(self.app.palette_key, ""))
+        self.scheme_box = ttk.Combobox(theme_frame, state="readonly", width=46, textvariable=self.scheme_var, values=[label for _, label in self._scheme_choices])
+        self.scheme_box.pack(anchor="w", padx=8)
+        self.scheme_box.bind("<<ComboboxSelected>>", lambda e: self._on_scheme_change())
+        self.swatch_row = ttk.Frame(theme_frame)
+        self.swatch_row.pack(anchor="w", padx=8, pady=(8, 2))
+        self.swatches = {}
+        for role, text in (("bg", "Background"), ("panel", "Panel"), ("fg", "Text"), ("accent", "Accent"), ("ok", "OK"), ("warn", "Check"), ("fail", "Fail")):
+            cell = ttk.Frame(self.swatch_row)
+            cell.pack(side="left", padx=(0, 10))
+            chip = tk.Frame(cell, width=34, height=18, highlightthickness=1, highlightbackground=themes.colour("border"))
+            chip.pack()
+            ttk.Label(cell, text=text, font=("Segoe UI", 8), foreground=themes.colour("muted")).pack()
+            self.swatches[role] = chip
+        self.scheme_note = ttk.Label(theme_frame, text="", foreground=themes.colour("muted"), wraplength=700, justify="left")
+        self.scheme_note.pack(anchor="w", padx=8, pady=(2, 8))
+        ttk.Button(theme_frame, text="Back to the default scheme", command=lambda: self._choose_scheme(themes.DEFAULT_KEY)).pack(anchor="w", padx=8, pady=(0, 8))
+        self.apply_palette()
+        if not SV_TTK_AVAILABLE:
+            ttk.Label(theme_frame, text="The Modern (Windows 11 style) schemes need the sv-ttk package: pip install sv-ttk, then restart.",
+                      foreground=themes.colour("muted"), wraplength=700, justify="left").pack(anchor="w", padx=8, pady=(0, 8))
 
         about_frame = ttk.LabelFrame(self, text="About")
         about_frame.pack(fill="x", padx=20, pady=6)
         ttk.Label(about_frame, text=f"{APP_NAME} v{APP_VERSION}", font=("Segoe UI", 11)).pack(
             anchor="w", padx=8, pady=(8, 0)
         )
-        ttk.Label(about_frame, text=APP_TAGLINE, foreground="gray", wraplength=700).pack(
+        ttk.Label(about_frame, text=APP_TAGLINE, foreground=themes.colour("muted"), wraplength=700).pack(
             anchor="w", padx=8, pady=(0, 8)
         )
 
-    def _on_theme_change(self):
-        self.app.apply_theme(self.theme_var.get())
+    def apply_palette(self):
+        """Refresh the swatches and the note to the scheme that is active now (called by the app after every change)."""
+        p = themes.get()
+        for role, chip in self.swatches.items():
+            chip.configure(background=p[role], highlightbackground=p["border"])
+        self.scheme_var.set(dict(self._scheme_choices).get(self.app.palette_key, ""))
+        self.scheme_note.configure(text="Applies at once and is remembered. " + (
+            "The high contrast scheme uses the strongest text and border contrast." if self.app.palette_key == "high_contrast" else
+            "State is also written in words (OK, Check, Fail), never by colour alone."))
+
+    def _on_scheme_change(self):
+        labels = {label: key for key, label in self._scheme_choices}
+        key = labels.get(self.scheme_var.get())
+        if key:
+            self._choose_scheme(key)
+
+    def _choose_scheme(self, key):
+        self.app.apply_palette(key, persist=True)
 
 
 # --- App shell -----------------------------------------------------------------
@@ -4590,6 +4614,8 @@ class App(tk.Tk):
         self.title(APP_NAME)
         self.geometry("1080x780")
         self.minsize(980, 620)
+        self.palette_key = themes.DEFAULT_KEY
+        themes.apply(self, self.palette_key, sv_ttk if SV_TTK_AVAILABLE else None)       # before any widget exists, so plain Tk widgets pick the colours up
         self.prefs_path = None                  # set by enable_workspace: a plain App() in a test never reads or writes a profile
         self._tour_window = None
         self._help_window = None
@@ -4633,7 +4659,7 @@ class App(tk.Tk):
         self._set_window_icon()
         self._build_menu()
         self._build_shell()
-        self.apply_theme(self.current_theme)
+        self.apply_palette(self.palette_key)
         self.show_screen("dashboard")
         self.after(150, self._poll_queue)
         self.after(200, self._scan_pump)
@@ -4710,22 +4736,55 @@ class App(tk.Tk):
             pass
         self.after(200, self._scan_pump)
 
-    def apply_theme(self, theme_name: str):
-        self.current_theme = theme_name
-        if SV_TTK_AVAILABLE:
-            sv_ttk.set_theme(theme_name)
-
-        if theme_name == "dark":
-            text_bg, text_fg, cursor = "#1e1e1e", "#e6e6e6", "#e6e6e6"
-        else:
-            text_bg, text_fg, cursor = "#ffffff", "#000000", "#000000"
-
+    def apply_palette(self, key, persist=False):
+        """Switch the colour scheme everywhere: every ttk widget (through the style), the plain Tk text boxes, the READ-ONLY badge, the status colours
+        already shown, and the screens that colour their own rows. `persist` remembers the choice in prefs.json (not for a plain App() in a test)."""
+        old = themes.get()
+        new = themes.apply(self, key, sv_ttk if SV_TTK_AVAILABLE else None)
+        self.palette_key = key if key in themes.PALETTES and (new is themes.PALETTES[key]) else themes.DEFAULT_KEY
+        self.current_theme = "dark" if new["dark"] else "light"
         ui_style.configure()
         for widget in self.dark_aware_texts:
             try:
-                widget.configure(bg=text_bg, fg=text_fg, insertbackground=cursor)
+                widget.configure(bg=new["text_bg"], fg=new["text_fg"], insertbackground=new["text_fg"],
+                                 selectbackground=new["select_bg"], selectforeground=new["select_fg"])
             except tk.TclError:
                 pass  # widget may have been destroyed
+        if hasattr(self, "read_only_badge"):
+            self.read_only_badge.configure(background=new["ok"], foreground="#000000" if themes.contrast(new["ok"], "#000000") >= themes.contrast(new["ok"], "#ffffff") else "#ffffff")
+        self._recolour_status(old, new)
+        for menu in getattr(self, "_menus", []):          # drawn by Tk on Linux; Windows draws its own menu bar and ignores this
+            try:
+                menu.configure(background=new["panel"], foreground=new["fg"], activebackground=new["accent"], activeforeground=new["accent_fg"])
+            except tk.TclError:
+                pass
+        for screen in self.screens.values():
+            hook = getattr(screen, "apply_palette", None)
+            if hook:
+                hook()
+        if persist and self.prefs_path:
+            data = prefs.load(self.prefs_path)
+            data["palette"] = self.palette_key
+            prefs.save(self.prefs_path, data)
+
+    def apply_theme(self, theme_name: str):
+        """Kept for old callers: 'dark' or 'light' -> the matching scheme."""
+        self.apply_palette(("modern_" if SV_TTK_AVAILABLE else "industrial_") + ("dark" if theme_name == "dark" else "light"))
+
+    def _recolour_status(self, old, new):
+        """Labels coloured at build time with a state colour (ok / warn / fail / accent) are moved to the new scheme's colour for that role."""
+        mapping = {old[role].lower(): new[role] for role in ("ok", "warn", "fail", "accent", "muted")}
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                try:
+                    current = str(child.cget("foreground")).lower()
+                    if current in mapping:
+                        child.configure(foreground=mapping[current])
+                except tk.TclError:
+                    pass
+                walk(child)
+        walk(self)
 
     def _set_window_icon(self):
         ico_path = resource_path(os.path.join("assets", "protoprobe.ico"))
@@ -4761,6 +4820,7 @@ class App(tk.Tk):
         help_menu.add_command(label="About ProtoProbe", command=self.show_about)
         menubar.add_cascade(label="Help", menu=help_menu)
         self.config(menu=menubar)
+        self._menus = [menubar, file_menu, help_menu]
 
     def show_about(self):
         win = tk.Toplevel(self)
@@ -4778,11 +4838,11 @@ class App(tk.Tk):
             pass
 
         ttk.Label(win, text=APP_NAME, font=("Segoe UI", 16, "bold")).pack()
-        ttk.Label(win, text=f"Version {APP_VERSION}", foreground="gray").pack(pady=(0, 8))
-        ttk.Label(win, text=APP_TAGLINE, wraplength=300, justify="center", foreground="gray").pack(padx=20)
+        ttk.Label(win, text=f"Version {APP_VERSION}", foreground=themes.colour("muted")).pack(pady=(0, 8))
+        ttk.Label(win, text=APP_TAGLINE, wraplength=300, justify="center", foreground=themes.colour("muted")).pack(padx=20)
         ttk.Label(
             win, text="Modbus TCP/RTU  ·  S7comm  ·  MC Protocol  ·  OPC UA  ·  BACnet/IP",
-            font=("Segoe UI", 9), foreground="gray",
+            font=("Segoe UI", 9), foreground=themes.colour("muted"),
         ).pack(pady=(12, 0))
         ttk.Button(win, text="Close", command=win.destroy).pack(pady=16)
 
@@ -4790,14 +4850,15 @@ class App(tk.Tk):
         bar = ttk.Frame(self)
         bar.pack(side="bottom", fill="x")
         ttk.Separator(bar).pack(side="top", fill="x")
-        tk.Label(bar, text=" READ-ONLY ", background="#2e9d5b", foreground="#ffffff", font=("Segoe UI", 8, "bold")).pack(side="left", padx=(10, 8), pady=3)
+        self.read_only_badge = tk.Label(bar, text=" READ-ONLY ", background=themes.colour("ok"), foreground="#000000", font=("Segoe UI", 8, "bold"))
+        self.read_only_badge.pack(side="left", padx=(10, 8), pady=3)
         self.status_labels = {}
         for key in ("connections", "polling", "scan", "admin"):
-            lbl = ttk.Label(bar, text="", font=("Segoe UI", 8), foreground="gray")
+            lbl = ttk.Label(bar, text="", font=("Segoe UI", 8), foreground=themes.colour("muted"))
             lbl.pack(side="left", padx=8)
             self.status_labels[key] = lbl
-        ttk.Label(bar, text=f"{APP_NAME} v{APP_VERSION}", font=("Segoe UI", 8), foreground="gray").pack(side="right", padx=10)
-        help_ui.Tooltip(bar.winfo_children()[1], "ProtoProbe only reads from PLCs. It never writes a value.")
+        ttk.Label(bar, text=f"{APP_NAME} v{APP_VERSION}", font=("Segoe UI", 8), foreground=themes.colour("muted")).pack(side="right", padx=10)
+        help_ui.Tooltip(self.read_only_badge, "ProtoProbe only reads from PLCs. It never writes a value.")
 
     def _build_shell(self):
         self._build_status_bar()
@@ -4818,7 +4879,7 @@ class App(tk.Tk):
         except tk.TclError:
             pass
         ttk.Label(header, text=APP_NAME, font=("Segoe UI", 13, "bold")).pack(side="left")
-        ttk.Label(sidebar, text=f"v{APP_VERSION}", font=("Segoe UI", 8), foreground="gray").pack(
+        ttk.Label(sidebar, text=f"v{APP_VERSION}", font=("Segoe UI", 8), foreground=themes.colour("muted")).pack(
             anchor="w", padx=16, pady=(0, 16)
         )
 
@@ -4835,7 +4896,7 @@ class App(tk.Tk):
         content_outer.pack(side="left", fill="both", expand=True)
         top_bar = ttk.Frame(content_outer)
         top_bar.pack(side="top", fill="x")
-        self.crumb = ttk.Label(top_bar, text="", foreground="gray")
+        self.crumb = ttk.Label(top_bar, text="", foreground=themes.colour("muted"))
         self.crumb.pack(side="left", padx=20, pady=6)
         ttk.Button(top_bar, text="? Help (F1)", command=lambda: self.show_help(self.current_screen)).pack(side="right", padx=14, pady=4)
         ttk.Separator(content_outer).pack(side="top", fill="x")
@@ -5017,6 +5078,9 @@ class App(tk.Tk):
         """Remember connections and tags between sessions: load the saved file now, save changes every few seconds and when the window closes."""
         self.workspace_file = path or workspace.default_path()
         self.prefs_path = prefs.path_for(self.workspace_file)
+        saved = prefs.load(self.prefs_path).get("palette")
+        if saved and saved != self.palette_key and saved in dict(themes.available(SV_TTK_AVAILABLE)):
+            self.apply_palette(saved)
         data, message = workspace.load(self.workspace_file)
         notes = [message] if message else []
         if data:
