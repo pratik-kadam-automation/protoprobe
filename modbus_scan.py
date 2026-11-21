@@ -2,8 +2,8 @@
 value in decimal, hex, binary and as 32-bit numbers, see the raw request and response bytes, the PLC's exception in words, the response
 time and counters, and find which unit IDs answer.
 
-READ ONLY: only function codes 1 to 4 exist here. There is no function that writes (standing rule 5). Modbus TCP only (RTU over serial is
-not built). Written from the Modbus specification; OpenModScan (MIT, C++/Qt) was used as a feature reference only, no code was copied.
+READ ONLY: only function codes 1 to 4 exist here. There is no function that writes (standing rule 5). Modbus TCP (Ethernet) and Modbus RTU over a serial
+port (RS-485 / RS-232, needs the pyserial package). Written from the Modbus specification; OpenModScan (MIT, C++/Qt) was used as a feature reference only, no code was copied.
 """
 import socket
 import struct
@@ -159,7 +159,7 @@ def describe_bits(values, start, base=0):
 
 
 # --- which unit IDs answer ---------------------------------------------------------------------------------------
-def sweep_units(host, port, units, fn=3, address=0, timeout=0.6, stop=lambda: False, progress=None):
+def sweep_units(host, port, units, fn=3, address=0, timeout=0.6, stop=lambda: False, progress=None, reader=None):
     """Ask a one-register read of every unit ID. A device that answers with an EXCEPTION is alive too (it just has no such register).
     -> [(unit, "answers" | "exception: ...")]; silence is not listed."""
     found = []
@@ -167,7 +167,10 @@ def sweep_units(host, port, units, fn=3, address=0, timeout=0.6, stop=lambda: Fa
         if stop():
             break
         try:
-            read(host, port, u, fn, address, 1, timeout=timeout, tid=u + 1)
+            if reader:
+                reader(u, fn, address, 1, timeout)                 # e.g. a Modbus RTU read on a serial port
+            else:
+                read(host, port, u, fn, address, 1, timeout=timeout, tid=u + 1)
             found.append((u, "answers"))
         except ModbusError as exc:
             if "exception" in str(exc):
@@ -175,3 +178,103 @@ def sweep_units(host, port, units, fn=3, address=0, timeout=0.6, stop=lambda: Fa
         if progress:
             progress(n + 1, len(units))
     return found
+
+
+# --- Modbus RTU over a serial port ---------------------------------------------------------------------------------
+def crc16(data):
+    """The Modbus CRC-16 (polynomial 0xA001, start 0xFFFF) of the bytes, as an int; it is sent low byte first."""
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+    return crc
+
+
+def build_rtu_request(unit, fn, start, count):
+    """The RTU frame for a READ (functions 1 to 4 only): unit, function, address, count, CRC (low byte first)."""
+    if fn not in FUNCTIONS:
+        raise ValueError("only the read functions 1 to 4 exist in this tool")
+    if not 0 <= start <= 65535 or not 1 <= count <= MAX_COUNT[fn] or not 0 <= unit <= 255:
+        raise ValueError(f"address 0-65535, unit 0-255 and count 1-{MAX_COUNT[fn]} for function {fn}")
+    body = struct.pack(">BBHH", unit, fn, start, count)
+    return body + struct.pack("<H", crc16(body))
+
+
+def parse_rtu_response(frame, unit, fn, count):
+    """Like parse_response, for an RTU frame: checks the CRC and the unit first. Raises ModbusError in words."""
+    if len(frame) < 5:
+        raise ModbusError(f"the answer is too short ({len(frame)} bytes)")
+    if struct.unpack("<H", frame[-2:])[0] != crc16(frame[:-2]):
+        raise ModbusError("the answer has a wrong CRC: noise on the line, a wrong baud rate or parity, or A and B swapped")
+    if frame[0] != unit:
+        raise ModbusError(f"the answer is from unit {frame[0]}, not {unit}")
+    return parse_response(b"\x00\x00\x00\x00\x00\x00" + frame[:-2], fn, count)
+
+
+PARITIES = {"N": "None", "E": "Even", "O": "Odd"}
+
+
+def list_ports():
+    """[(device, description)] of the serial ports this computer has (COM3 ...), or [] when pyserial is missing."""
+    try:
+        from serial.tools import list_ports as lp
+    except ImportError:
+        return []
+    return [(p.device, p.description or "") for p in sorted(lp.comports(), key=lambda p: p.device)]
+
+
+def read_rtu(port, baud, parity, stopbits, unit, fn, start, count, timeout=1.0, stats=None, bytesize=8):
+    """One read over a serial port (or any pyserial URL such as socket://host:port). -> like read(); raises ModbusError in words."""
+    try:
+        import serial
+    except ImportError:
+        raise ModbusError("Modbus RTU needs the pyserial package: python -m pip install pyserial")
+    req = build_rtu_request(unit, fn, start, count)
+    if stats:
+        stats.sent += 1
+    t0 = time.perf_counter()
+    try:
+        ser = serial.serial_for_url(port, baudrate=int(baud), parity=parity, stopbits=int(stopbits), bytesize=int(bytesize), timeout=timeout)
+    except (serial.SerialException, ValueError, OSError) as exc:
+        if stats:
+            stats.errors += 1
+        raise ModbusError(f"cannot open {port}: {exc} (is it in use by another program, or unplugged?)")
+    try:
+        with ser:
+            ser.reset_input_buffer()
+            ser.write(req)
+            head = ser.read(3)
+            if len(head) < 3:
+                if stats:
+                    stats.timeouts += 1
+                raise ModbusError(f"no answer within {timeout:g} s: wrong unit ID, baud rate or parity, A and B swapped, or the device is off")
+            more = 2 if head[1] & 0x80 else head[2] + 2
+            rest = ser.read(more)
+            frame = head + rest
+            if len(rest) < more:
+                if stats:
+                    stats.errors += 1
+                err = ModbusError("the answer is cut short: noise on the line or a wrong baud rate")
+                err.request, err.response = req, frame
+                raise err
+    except serial.SerialException as exc:
+        if stats:
+            stats.errors += 1
+        raise ModbusError(f"serial port error: {exc}")
+    ms = (time.perf_counter() - t0) * 1000
+    if stats:
+        stats.last_ms = ms
+    try:
+        values = parse_rtu_response(frame, unit, fn, count)
+    except ModbusError as exc:
+        if stats:
+            if "exception" in str(exc):
+                stats.exceptions += 1
+            else:
+                stats.errors += 1
+        exc.request, exc.response = req, frame
+        raise
+    if stats:
+        stats.ok += 1
+    return {"values": values, "request": req, "response": frame, "ms": ms}
