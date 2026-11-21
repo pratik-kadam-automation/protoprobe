@@ -103,6 +103,40 @@ class FakeReader:
         return {a: mem.get(a, 0) for a in range(region.start, region.end + 1, region.step)}
 
 
+class FakeBitReader(FakeReader):
+    reads = 0
+
+    def read_bits(self, bit_tags):
+        FakeBitReader.reads += 1
+        # %I0.0 stays off, %Q0.5 is on, %M0.3 changes between the samples
+        return {t["name"]: (1 if t["name"] == "Lamp" else (FakeBitReader.reads % 2 if t["name"] == "Flicker" else 0)) for t in bit_tags}
+
+
+class PlcReadSiemensBits(unittest.TestCase):
+    def test_bool_tags_are_read_as_bits(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "tags.tsv")
+        open(p, "w").write("Name\tPath\tData Type\tLogical Address\tComment\n"
+                           "Tank_Level\tt\tReal\t%MD20\tLevel\n"
+                           "Start on\tt\tBool\t%I0.0\t\n"
+                           "Lamp\tt\tBool\t%Q0.5\t\n"
+                           "Flicker\tt\tBool\t%M0.3\t\n"
+                           "Odd\tt\tBool\t%MB4\t\n")
+        orig = plcread.DriverReader
+        plcread.DriverReader = FakeBitReader
+        FakeBitReader.reads = 0
+        try:
+            code, text = run(["read", "--make", "siemens", "--ip", "10.0.0.5", "--tags", p, "--samples", "3", "--interval", "0"])
+        finally:
+            plcread.DriverReader = orig
+        self.assertRegex(text, r"Start_on\s+I0\.0\s+0")
+        self.assertRegex(text, r"Lamp\s+Q0\.5\s+1")
+        self.assertRegex(text, r"Flicker\s+M0\.3\s+\S+\s+yes")
+        self.assertIn("3 bit tags read", text)
+        self.assertNotIn("skipped Start on", text)       # read now, no longer skipped
+        self.assertIn("skipped Odd", text)               # a byte address stays skipped
+
+
 class PlcReadSiemens(unittest.TestCase):
     def test_s7_text_list(self):
         d = tempfile.mkdtemp()

@@ -128,12 +128,15 @@ def cmd_read(args, out, driver_factory):
     regions = cm.import_regions(tags)
     reader = DriverReader(protocol, iface, driver_factory)
     cands = {t["name"]: cm.candidate_for_import(t, next(g for g in regions if g.area == t["area"] and g.db == t.get("db") and g.start <= t["number"] <= g.end)) for t in tags}
-    samples = []
+    samples, bit_samples = [], []
+    bit_tags = parsed.get("bit_tags") or []
     for i in range(args.samples):
         if i:
             time.sleep(args.interval)
         try:
             memory = {g.name: reader.read_region(g) for g in regions}
+            if bit_tags and hasattr(reader, "read_bits"):
+                bit_samples.append(reader.read_bits(bit_tags))
         except Exception as e:      # noqa: BLE001 -- the driver's own message is the useful part
             print(f"Could not read the PLC: {type(e).__name__}: {e}".rstrip(": "), file=out)
             print("Check the IP, that the PLC allows this access (SLMP on / PUT-GET allowed) and, with two network cards, --local-ip.", file=out)
@@ -156,19 +159,33 @@ def cmd_read(args, out, driver_factory):
         flagged += 1 if flags else 0
         label = cm.format_address(protocol, c.region, t["number"], t["datatype"])
         result.append({"name": t["name"], "address": label, "type": t["datatype"], "values": vals, "value": vals[-1], "flags": sorted(flags)})
+    bits = []
+    for b in bit_tags if bit_samples else []:
+        vals = [s.get(b["name"]) for s in bit_samples]
+        shown = [v for v in vals if v is not None]
+        bits.append({"name": b["name"], "address": b["address"].lstrip("%").upper(), "values": vals, "value": vals[-1],
+                     "changed": len(set(shown)) > 1})
+    read_bits = {b["name"] for b in bits if b["value"] is not None}
+    skipped = [(n, why) for n, why in parsed["skipped"] if n not in {b["raw_name"] for b in bit_tags if b["name"] in read_bits}]
     if args.json:
-        print(json.dumps({"ip": args.ip, "tags": result, "skipped": parsed["skipped"]}, indent=2), file=out)
+        print(json.dumps({"ip": args.ip, "tags": result, "bits": bits, "skipped": skipped}, indent=2), file=out)
     elif args.csv:
         w = csv.writer(out, lineterminator="\n")
         w.writerow(["name", "address", "type", "value", "flags"])
         for r in result:
             w.writerow([r["name"], r["address"], r["type"], "" if r["value"] is None else r["value"], " ".join(r["flags"])])
+        for b in bits:
+            w.writerow([b["name"], b["address"], "bit", "" if b["value"] is None else b["value"], "CHANGED" if b["changed"] else ""])
     else:
         header = ["Name", "Address", "Type", "Value" if len(samples) == 1 else f"Value (last of {len(samples)})", "Flags"]
         print(table([[r["name"], r["address"], r["type"], fmt(r["value"], r["type"]), " ".join(r["flags"])] for r in result], header), file=out)
-        for n, why in parsed["skipped"]:
+        if bits:
+            print("", file=out)
+            print(table([[b["name"], b["address"], "-" if b["value"] is None else b["value"], "yes" if b["changed"] else ""] for b in bits],
+                        ["Bit tag", "Address", "Value" if len(samples) == 1 else f"Value (last of {len(samples)})", "Changed"]), file=out)
+        for n, why in skipped:
             print(f"skipped {n}: {why}", file=out)
-        print(f"\n{len(result)} tags read, {len(result) - flagged} fine, {flagged} flagged.", file=out)
+        print(f"\n{len(result)} tags read, {len(result) - flagged} fine, {flagged} flagged." + (f" {len(bits)} bit tags read." if bits else ""), file=out)
     return 2 if flagged else 0
 
 

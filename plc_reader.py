@@ -79,6 +79,31 @@ class DriverReader:
     def _addr_of(protocol, tag):
         return tag["device_number"] if protocol == "mc" else tag["start_byte"] if protocol == "s7" else tag["address"]
 
+    def read_bits(self, bit_tags):
+        """Siemens only: the current value (0 or 1) of single-bit tags, {name: 0/1}. Each tag is {name, area, db, byte, bit}; a tag the PLC
+        refuses is left out of the answer."""
+        if self.protocol != "s7" or not bit_tags:
+            return {}
+        cfg = {"interface": self.interface, "tags": []}
+        fac = self.driver_factory
+        driver = fac[self.pkey](cfg) if isinstance(fac, dict) else fac(self.pkey, cfg)
+        tags = [{"name": t["name"], "area": t["area"], "db_number": t.get("db") or 1, "start_byte": t["byte"], "bit_offset": t["bit"],
+                 "data_type": "bit", "multiplier": 1.0, "offset": 0.0, "mqtt_key": t["name"]} for t in bit_tags]
+
+        async def run():
+            await driver.connect()
+            out = {}
+            try:
+                for i in range(0, len(tags), BATCH):
+                    driver.config["tags"] = tags[i:i + BATCH]
+                    values = await driver.poll()
+                    out.update({k: int(v) for k, v in values.items()})
+            finally:
+                await driver.disconnect()
+            return out
+
+        return asyncio.run(run())
+
     def read_region(self, region, stop=None):
         tags = self.build_range_tags(self.pkey, self._params(region))
         is_modbus = self.protocol.startswith("modbus")

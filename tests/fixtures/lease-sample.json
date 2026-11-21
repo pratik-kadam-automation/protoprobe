@@ -1,0 +1,37 @@
+{
+  "_comment": "TEST ONLY. The key below signs these samples and nothing else; its private half was discarded. The same file is tests/fixtures/lease-sample.json in ProtoProbe. Production keys are different and never in a repo.",
+  "test_only": true,
+  "public_keys": {
+    "k1": "ZPzpyKNJ3TvzdrybNWLdT+EEnI6XJEpxgmkkj0qy0zQ="
+  },
+  "leases": {
+    "field_kit": {
+      "lease": {
+        "v": 1,
+        "kid": "k1",
+        "entitlement": "ENT-TEST-KIT",
+        "kind": "field-kit",
+        "issued_at": "2026-11-20T10:00:00.000Z",
+        "expires_at": "2026-11-23T10:00:00.000Z",
+        "valid_until": null,
+        "grace_days": 3,
+        "mode_on_expiry": "disable"
+      },
+      "sig": "9qfGszrVCYmOMi8+lwqmXkVCiCW3aKdk+QtvEPxJrH4n0XweRuDhJxtXwshrwfWyfODa4hxwQqVtAiARePbmBA=="
+    },
+    "on_prem": {
+      "lease": {
+        "v": 1,
+        "kid": "k1",
+        "entitlement": "ENT-TEST-ONPREM",
+        "kind": "on-prem",
+        "issued_at": "2026-11-20T10:00:00.000Z",
+        "expires_at": "2026-12-05T10:00:00.000Z",
+        "valid_until": "2027-05-20T00:00:00.000Z",
+        "grace_days": 3,
+        "mode_on_expiry": "buffer_only"
+      },
+      "sig": "rTZPceSGsutGWE6wz1QqQc8vfPpuxFIC8+RPIT+0El7YFVtvJVyAug3Y2FhQ9jjDOB1GO7VNWHTqY7klWy5gBg=="
+    }
+  }
+}

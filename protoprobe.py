@@ -19,6 +19,7 @@ except ImportError:
     SV_TTK_AVAILABLE = False
 import csv
 import json
+import logging
 import operator
 import os
 import queue
@@ -29,10 +30,10 @@ import asyncio
 import time
 import uuid
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -49,6 +50,15 @@ from drivers.opcua_driver import OPCUADriver
 from drivers.bacnet_driver import BACnetDriver
 from commissioning_screen import CommissioningScreen
 from plc_reader import build_range_tags
+import plc_catalog
+import s7_address
+import signal_hints
+import candidates
+import output_json
+import tag_import
+import workspace
+import arpscan
+import modbus_scan
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
@@ -59,6 +69,7 @@ NAV_ITEMS = [
     ("oee", "OEE config"),
     ("output", "Output"),
     ("network", "Network tools"),
+    ("modbus_test", "Modbus test"),
     ("settings", "Settings"),
 ]
 
@@ -135,10 +146,15 @@ FIELD_OPTIONS = {
 }
 
 DEFAULT_TEMPLATE = json.dumps({
-    "deviceId": "__DEVICE_ID__",
+    "deployment_id": "__DEPLOYMENT_ID__",
+    "gateway_id": "__GATEWAY_ID__",
+    "machine_id": "__MACHINE_ID__",
     "timestamp": "__TIMESTAMP__",
-    "metrics": "__METRICS__",
+    "data": "__METRICS__",
 }, indent=2)
+
+# The layout ProtoProbe used before the commissioning IDs were added; "Use the commissioning layout" replaces it.
+OLD_TEMPLATE = json.dumps({"deviceId": "__DEVICE_ID__", "timestamp": "__TIMESTAMP__", "metrics": "__METRICS__"}, indent=2)
 
 
 BACNET_TYPE_ABBR = {
@@ -253,9 +269,9 @@ def explain_s7_error(message):
     """A plain-words hint for a snap7 error text, for when a probe or read of a DB fails. The texts are snap7's (they vary a little
     between versions), so this matches on the words that matter and returns None when it does not know the error."""
     m = str(message).lower()
-    if "address out of range" in m or "item not available" in m or "invalid address" in m:
-        return ("that DB does not exist, or it uses 'optimized block access' (then absolute addresses cannot be read: "
-                "in TIA Portal turn off 'Optimized block access' for that DB and compile)")
+    if "address out of range" in m or "item not available" in m or "invalid address" in m or "does not exist" in m:
+        return ("that DB does not exist, or it has no variables yet (size 0), or it uses 'optimized block access' (then absolute addresses "
+                "cannot be read: in TIA Portal turn off 'Optimized block access' for that DB and compile)")
     if "function not available" in m or "not allowed" in m or "access to object" in m or "protection" in m:
         return ("the PLC refuses the read: in TIA Portal enable 'Permit access with PUT/GET communication from remote partner' "
                 "(S7-1200/1500) and check the CPU's protection level")
@@ -264,6 +280,51 @@ def explain_s7_error(message):
     if "iso" in m and ("pdu" in m or "connect" in m or "negotiating" in m):
         return "the PLC refused the connection: check rack and slot (S7-1200/1500: rack 0, slot 1; S7-300: rack 0, slot 2)"
     return None
+
+
+def read_tags_once(conn, tags, driver_factory=None):
+    """Read several tags once over ONE connection: {name: (value, None)} or {name: (None, "what went wrong")}. The drivers log a failed tag
+    instead of raising, so their warning text is collected and returned as the reason; a failure to connect is the reason for every tag."""
+    collector = PollLogCollector()
+    loggers = [logging.getLogger(n) for n in DRIVER_LOGGERS]
+    for lg in loggers:
+        lg.addHandler(collector)
+    entries = []
+    for tag in tags:
+        entry = {"multiplier": 1.0, "offset": 0.0, "mqtt_key": tag["name"]}
+        entry.update(tag)
+        entries.append(entry)
+    cfg = {"interface": conn.interface, "tags": entries}
+    if conn.protocol in ("modbus_tcp", "modbus_rtu"):
+        cfg = {"interface": conn.interface, "devices": [{"unit_id": conn.interface.get("unit_id", 1), "tags": entries}]}
+    factory = driver_factory or DRIVER_FACTORY
+
+    async def run():
+        driver = factory[conn.protocol](cfg)
+        await driver.connect()
+        try:
+            return await driver.poll()
+        finally:
+            try:
+                await driver.disconnect()
+            except Exception:
+                pass
+
+    try:
+        values = asyncio.run(run())
+    except Exception as exc:
+        reason = str(exc) or exc.__class__.__name__
+        return {t["name"]: (None, reason) for t in tags}
+    finally:
+        for lg in loggers:
+            lg.removeHandler(collector)
+    fallback = next(iter(collector.errors.values()), "no value came back")
+    return {t["name"]: ((values[t["name"]], None) if t["name"] in values else (None, collector.errors.get(t["name"]) or fallback)) for t in tags}
+
+
+def read_tag_once(conn, tag, driver_factory=None):
+    """Read ONE tag once: (value, None) or (None, "what went wrong"). For the Test read and Read now buttons."""
+    return read_tags_once(conn, [tag], driver_factory)[tag["name"]]
 
 
 def discover_db_numbers_sync(conn, max_db, out_queue=None, errors=None):
@@ -294,6 +355,32 @@ def discover_db_numbers_sync(conn, max_db, out_queue=None, errors=None):
     return asyncio.run(run_probe())
 
 
+def hidden_subprocess_kwargs(platform=None):
+    """Keyword arguments that start a child program (ping, arp ...) WITHOUT a window. ProtoProbe.exe has no console of its own, so on
+    Windows every child process otherwise opens its own black console window: an IP scan of 254 addresses opened 254 of them, many at
+    once, and they took the focus away so the app could not be used meanwhile. Elsewhere nothing is needed."""
+    if not (platform or sys.platform).startswith("win"):
+        return {}
+    kwargs = {"creationflags": 0x08000000}                 # CREATE_NO_WINDOW
+    if hasattr(subprocess, "STARTUPINFO"):                 # Windows only; also asks the program to start hidden
+        info = subprocess.STARTUPINFO()
+        info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        info.wShowWindow = 0                               # SW_HIDE
+        kwargs["startupinfo"] = info
+    return kwargs
+
+
+def ping_once(ip, platform=None, runner=None):
+    """True if `ip` answers one ping. The ping runs hidden (see hidden_subprocess_kwargs). `runner` is a stand-in for subprocess.run in tests."""
+    platform = platform or sys.platform
+    cmd = ["ping", "-n", "1", "-w", "500", ip] if platform.startswith("win") else ["ping", "-c", "1", "-W", "1", ip]
+    try:
+        result = (runner or subprocess.run)(cmd, capture_output=True, timeout=2, **hidden_subprocess_kwargs(platform))
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def run_db_discovery(conn, max_db, out_queue):
     """The background half of the "Discover DBs" button. Whatever happens it puts exactly one final message on out_queue, so the window
     can always recover: ("db_discovery_done", (dbs, errors)) or ("db_discovery_error", text). (Before this, a failed connection killed the
@@ -315,8 +402,23 @@ def discovery_status(kind, data):
     dbs, errs = data
     if dbs or not errs:
         return f"Done -- {len(dbs)} DB(s) found", "gray"
-    hint = explain_s7_error(errs[0][1])
-    return f"Done -- 0 DB(s) found. DB{errs[0][0]}: {errs[0][1]}" + (f" -- {hint}" if hint else ""), "red"
+    missing = [(d, m) for d, m in errs if "does not exist" in m.lower()]
+    refused = [(d, m) for d, m in errs if "does not exist" not in m.lower()]
+    if missing and refused:
+        # The PLC answers differently for a DB that is not there and for one that is there but refuses the read: the second kind exists.
+        names = ", ".join(f"DB{d}" for d, _m in refused[:8]) + (" ..." if len(refused) > 8 else "")
+        reason = refused[0][1]
+        return (f"Done -- 0 readable. {names} {'exists' if len(refused) == 1 else 'exist'} but refuse{'s' if len(refused) == 1 else ''} the read ({reason}): "
+                f"most likely the DB has no variables yet (size 0), or 'Optimized block access' is on for it, or the CPU's protection blocks it. "
+                f"The other {len(missing)} probed DB(s) do not exist."), "red"
+    counts = {}
+    for _db, msg in errs:
+        counts[msg] = counts.get(msg, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    reasons = "; ".join(f"{n} x {m}" for m, n in ranked[:2])
+    hint = explain_s7_error(ranked[0][0])
+    return (f"Done -- 0 DB(s) found; all {len(errs)} probed DBs failed ({reasons}; first: DB{errs[0][0]})"
+            + (f" -- {hint}" if hint else "")), "red"
 
 
 def type_label_for_tag(protocol, tag):
@@ -329,6 +431,66 @@ def type_label_for_tag(protocol, tag):
     if protocol in ("modbus_tcp", "modbus_rtu"):
         return tag.get("register_type", "?")
     return protocol
+
+
+def is_bit_packed_area(protocol, tag):
+    """True for memory that holds one digital signal per BIT (S7 process-image
+    inputs I and outputs Q). A 16-bit/float32 reading of such a word is
+    meaningless: it is 16 separate on/off channels, not a number. (Analog
+    channels also live in I/Q but as whole 16-bit words -- that is why the
+    int16 value stays visible.)"""
+    return protocol == "s7comm" and tag.get("area") in ("I", "Q")
+
+
+def s7_word_bits(area, start_byte, raw):
+    """Bits set in one S7 word read at `start_byte`: S7 is big-endian, so the
+    first byte is the HIGH byte. Returns [(byte, bit), ...]."""
+    out = []
+    for b in range(8):
+        if (raw >> (8 + b)) & 1:
+            out.append((start_byte, b))
+    for b in range(8):
+        if (raw >> b) & 1:
+            out.append((start_byte + 1, b))
+    return out
+
+
+def format_bits(area, bits, changed=()):
+    """'I0.3, I1.0*' (* = this bit changed during the scan)."""
+    changed = set(changed)
+    return ", ".join(f"{area}{b}.{k}" + ("*" if (b, k) in changed else "") for b, k in bits)
+
+
+def hint_for_result(r):
+    """What a scan row might be good for (signal_hints.Hint), from how it behaved during the scan; None when there is nothing to say."""
+    if r.get("bit_area"):
+        if r.get("bits_series"):
+            return signal_hints.classify_bits(r["bits_series"])
+        if r.get("bits_on"):
+            return signal_hints.Hint("steady_on", "bit(s) on the whole time: a permanent condition (power ok, guard closed ...)")
+        return signal_hints.Hint("idle", "no bit was on")
+    return signal_hints.classify_word(r["values"]) if r.get("values") else None
+
+
+def hint_text(hint):
+    if hint is None:
+        return ""
+    tags = [f"OEE: {hint.oee}" if hint.oee else "", f"predictive: {hint.predictive}" if hint.predictive else ""]
+    tags = [t for t in tags if t]
+    return hint.text + (f"   [{'; '.join(tags)}]" if tags else "")
+
+
+def bits_summary(area, bits_on, bits_changed):
+    """Text for the results table: the bits that are on (* = changed during the scan) and the bits that changed but are off in the last
+    snapshot. 'no bits on' when there is nothing to show."""
+    changed = set(bits_changed)
+    parts = []
+    if bits_on:
+        parts.append("on: " + format_bits(area, bits_on, changed))
+    gone = sorted(changed - set(bits_on))
+    if gone:
+        parts.append("changed, now off: " + ", ".join(f"{area}{b}.{k}*" for b, k in gone))
+    return "; ".join(parts) if parts else "no bits on"
 
 
 def _raw_word_from_int16(decoded_value: int) -> int:
@@ -410,6 +572,47 @@ def compute_32bit_candidates(current_value, next_value):
     return candidates
 
 
+# The drivers log under "edge_collector.s7", "edge_collector.mc", "edge_collector.modbus" ...; a handler on the parent catches all of them.
+# (It was once written as "drivers.s7_driver", which no driver uses: a stand-in logger of that name made the tests pass while the real
+# warnings still went to the console.)
+DRIVER_LOGGERS = ("edge_collector",)
+
+
+class ScanLogCollector(logging.Handler):
+    """Collects the drivers' per-address warnings during a scan instead of letting Python print every one of them to the console (an
+    unreadable range of 1000 addresses printed 1000 lines per snapshot). `counts` maps the error text to how many times it happened."""
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.counts = {}
+
+    def emit(self, record):
+        try:
+            text = str(record.args[-1]) if record.args else record.getMessage()
+        except Exception:
+            text = "error"
+        self.counts[text] = self.counts.get(text, 0) + 1
+
+    def top(self):
+        return max(self.counts, key=self.counts.get) if self.counts else None
+
+
+def last_readable_offset(readable, start, end, step=2):
+    """The highest offset in start..end (stepping by `step`) that `readable(offset)` accepts, found by halving: about log2(range) probes
+    instead of one read per address. Assumes memory is readable from `start` up to some limit and not beyond. None if `start` itself is not readable."""
+    if not readable(start):
+        return None
+    if readable(end):
+        return end
+    lo, hi = start, end                      # lo is readable, hi is not
+    while hi - lo > step:
+        mid = lo + max(step, ((hi - lo) // (2 * step)) * step)
+        if readable(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_queue, stop_event=None):
     """Reads `tags` num_snapshots times (batched, with progress pushed to
     out_queue), diffs them, and pushes one ('results', (conn.name,
@@ -426,7 +629,8 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
         out_queue.put(("status", f"[{job_label}] skipped -- empty range"))
         return
 
-    batches = [tags[i:i + SCAN_BATCH_SIZE] for i in range(0, len(tags), SCAN_BATCH_SIZE)]
+    scan_tags = list(tags)                  # what is really scanned: for Siemens it is cut down to the readable part of the range
+    batches = [scan_tags[i:i + SCAN_BATCH_SIZE] for i in range(0, len(scan_tags), SCAN_BATCH_SIZE)]
 
     if protocol in ("modbus_tcp", "modbus_rtu"):
         group_cfg = {"interface": conn.interface,
@@ -446,11 +650,35 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
         await driver.connect()
         snapshots = [dict() for _ in range(num_snapshots)]
         stopped_early = False
+        if protocol == "s7comm":
+            # Find where the PLC's memory really ends before reading it address by address: asking for memory that is not there
+            # (an input area of 1024 bytes scanned up to 2000) only fails, thousands of times.
+            first = scan_tags[0]
+            area, db = first["area"], first.get("db_number", 0)
+            loop = asyncio.get_event_loop()
+
+            def readable(offset):
+                try:
+                    driver._read_area_blocking(area, db, offset, 2)
+                    return True
+                except Exception:
+                    return False
+
+            first_byte, last_byte = first["start_byte"], scan_tags[-1]["start_byte"]
+            last_ok = await loop.run_in_executor(None, last_readable_offset, readable, first_byte, last_byte)
+            if last_ok is None:
+                out_queue.put(("status", f"[{job_label}] nothing readable at byte {first_byte}: the PLC has no memory here, or access is refused"))
+                scan_tags[:] = []
+                batches[:] = []
+            elif last_ok < last_byte:
+                scan_tags[:] = [t for t in scan_tags if t["start_byte"] <= last_ok]
+                batches[:] = [scan_tags[i:i + SCAN_BATCH_SIZE] for i in range(0, len(scan_tags), SCAN_BATCH_SIZE)]
+                out_queue.put(("status", f"[{job_label}] the PLC has {last_ok + 2 - first_byte} bytes here (up to byte {last_ok + 1}): scanning those, not up to {last_byte}"))
         for i in range(num_snapshots):
             done_count = 0
             for batch in batches:
                 if stop_event is not None and stop_event.is_set():
-                    out_queue.put(("status", f"[{job_label}] stopped -- reporting {done_count}/{len(tags)} read so far"))
+                    out_queue.put(("status", f"[{job_label}] stopped -- reporting {done_count}/{len(scan_tags)} read so far"))
                     stopped_early = True
                     break
                 set_batch_tags(batch)
@@ -459,8 +687,9 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
                 done_count += len(batch)
                 out_queue.put((
                     "status",
-                    f"[{job_label}] snapshot {i + 1}/{num_snapshots} -- {done_count}/{len(tags)} read"
+                    f"[{job_label}] snapshot {i + 1}/{num_snapshots} -- {done_count}/{len(scan_tags)} read"
                 ))
+                out_queue.put(("progress", (i + done_count / max(1, len(scan_tags))) / max(1, num_snapshots)))
             if stopped_early:
                 break
             if i < num_snapshots - 1:
@@ -468,24 +697,46 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
         await driver.disconnect()
         return snapshots
 
+    collector = ScanLogCollector()
+    loggers = [logging.getLogger(n) for n in DRIVER_LOGGERS]
+    for lg in loggers:
+        lg.addHandler(collector)            # quiet: a handler here also stops Python printing every warning to the console
     try:
         snapshots = asyncio.run(run_scan())
     except Exception as e:
         out_queue.put(("status", f"[{job_label}] failed: {e}"))
         return
+    finally:
+        for lg in loggers:
+            lg.removeHandler(collector)
+    if collector.counts:
+        out_queue.put(("status", f"[{job_label}] {sum(collector.counts.values())} reads failed; most common: {collector.top()}"))
 
     results = []
-    for tag in tags:
+    for tag in scan_tags:
         name = tag["name"]
         vals_present = [snap[name] for snap in snapshots if name in snap]
         if not vals_present:
             continue
         changed = len(set(vals_present)) > 1
         results.append({
-            "name": name, "tag": tag, "changed": changed, "latest": vals_present[-1],
+            "name": name, "tag": tag, "changed": changed, "latest": vals_present[-1], "values": list(vals_present),
             "raw_value": _raw_word_from_int16(vals_present[-1]),
             "type_label": type_label_for_tag(protocol, tag),
         })
+        if is_bit_packed_area(protocol, tag) or (protocol == "s7comm" and tag.get("area") == "M"):
+            # I/Q: only bits. M holds flags too (clock memory, status bits) next to words and counters, so M rows get the bits as well as the word.
+            raws = [_raw_word_from_int16(v) for v in vals_present]
+            all_bits = set()
+            for rw in raws:
+                all_bits.update(s7_word_bits(tag["area"], tag["start_byte"], rw))
+            now = set(s7_word_bits(tag["area"], tag["start_byte"], raws[-1]))
+            ever_changed = {bt for bt in all_bits if len({bt in set(s7_word_bits(tag["area"], tag["start_byte"], rw)) for rw in raws}) > 1}
+            results[-1]["bit_area"] = is_bit_packed_area(protocol, tag)
+            results[-1]["bits_on"] = sorted(now)
+            results[-1]["bits_changed"] = sorted(ever_changed)
+            results[-1]["bits_series"] = {bt: [1 if bt in set(s7_word_bits(tag["area"], tag["start_byte"], rw)) else 0 for rw in raws]
+                                          for bt in ever_changed}
 
     # 32-bit pairing: adjacent entries in `tags` are adjacent addresses
     # by construction (build_range_tags steps by 1 device number or 2
@@ -510,6 +761,8 @@ def run_range_scan(conn, protocol, tags, num_snapshots, delay_s, job_label, out_
     for i, tag in enumerate(tags[:-1]):
         name = tag["name"]
         next_name = tags[i + 1]["name"]
+        if result_by_name.get(name, {}).get("bit_area") or result_by_name.get(next_name, {}).get("bit_area"):
+            continue  # digital inputs/outputs are bits, not numbers: no 32-bit/float reading
         if name in latest_by_name and next_name in latest_by_name:
             result_by_name[name]["candidates_32bit"] = compute_32bit_candidates(
                 latest_by_name[name], latest_by_name[next_name]
@@ -579,16 +832,72 @@ def run_full_plc_scan_job(conn, protocol, options, num_snapshots, delay_s, out_q
     out_queue.put(("job_done", None))
 
 
+class PollLogCollector(logging.Handler):
+    """Keeps the drivers' per-tag warnings of the latest poll ("[group] tag NAME decode error: TEXT"; the driver leaves that tag out of its answer),
+    so the Live values screen can say WHICH tag failed and why. Also stops Python printing those warnings to the console."""
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.errors = {}
+
+    def emit(self, record):
+        try:
+            args = record.args or ()
+            tag = str(args[1]) if len(args) >= 2 else "*"
+            text = str(args[-1]) if len(args) >= 3 else "read failed"
+        except Exception:
+            tag, text = "*", "error"
+        self.errors[tag] = text
+
+    def take(self):
+        errors, self.errors = self.errors, {}
+        return errors
+
+
+def show_value(value):
+    """A live value for the table: 1.0 -> 1, 20.0 -> 20 (the drivers scale everything as a float), other numbers as they are."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+HEALTH_COLOURS = {"green": "#2fb463", "amber": "#e0a100", "red": "#e0483f", "grey": "#8a8a8a"}
+
+
+def connection_health(status, health, tag_count):
+    """(colour, text) for one connection: green = connected and every tag reads, amber = connecting / some tags fail, red = no connection or no
+    tag reads, grey = not polling. `status` is the connection's status string, `health` the poller's last report (or None)."""
+    status = status or "idle"
+    if status.startswith("error"):
+        return "red", "No connection: " + status[len("error:"):].strip() if status.startswith("error:") else "No connection"
+    if status in ("idle", "stopped"):
+        return "grey", "Not reading"
+    if status == "connecting":
+        return "amber", "Connecting..."
+    if not health or not health.get("polls"):
+        return "amber", "Connected, waiting for the first reading"
+    bad = len(health.get("bad", {}))
+    if tag_count and bad >= tag_count:
+        first = next(iter(health["bad"].values()), "no value")
+        return "red", f"Connected, but no tag can be read ({first})"
+    if bad:
+        return "amber", f"Reading {max(0, tag_count - bad)} of {tag_count} tags; {bad} failing"
+    return "green", f"Reading {tag_count} tag(s) OK, {health.get('cycle_ms', 0):.0f} ms per poll"
+
+
 class Connection:
-    def __init__(self, name, protocol, interface):
+    def __init__(self, name, protocol, interface, plc_type=None, enabled=True, poll_interval_s=2.0):
         self.name = name
         self.protocol = protocol
         self.interface = interface
+        self.enabled = enabled              # a disabled connection is kept but not polled
+        self.poll_interval_s = poll_interval_s
+        self.plc_type = plc_type            # the gateway's PLC-type name (plc_catalog), or None when only a protocol was chosen
         self.tags = []
         self.thread = None
         self.latest_values = {}
         self.last_updated = {}
         self.status = "idle"
+        self.health = None                  # the poller's last report: polls, errors, cycle_ms, bad {tag: error text}
 
 
 class PollerThread(threading.Thread):
@@ -608,7 +917,18 @@ class PollerThread(threading.Thread):
     async def _run_async(self):
         group_cfg = self._build_driver_config()
         driver = DRIVER_FACTORY[self.conn.protocol](group_cfg)
+        collector = PollLogCollector()
+        loggers = [logging.getLogger(n) for n in DRIVER_LOGGERS]
+        for lg in loggers:
+            lg.addHandler(collector)
+        try:
+            await self._poll_loop(driver, collector)
+        finally:
+            for lg in loggers:
+                lg.removeHandler(collector)
 
+    async def _poll_loop(self, driver, collector):
+        polls = errors = 0
         try:
             self.out_queue.put(("conn_status", (self.conn.name, "connecting")))
             await driver.connect()
@@ -623,7 +943,19 @@ class PollerThread(threading.Thread):
                 values = await driver.poll()
                 ts = time.strftime("%H:%M:%S")
                 self.out_queue.put(("values", (self.conn.name, values, ts)))
+                polls += 1
+                bad = collector.take()
+                for t in self.conn.tags:                   # a tag with no value and no message still failed
+                    if t["name"] not in values:
+                        bad.setdefault(t["name"], "no value")
+                known = {t["name"] for t in self.conn.tags}
+                bad = {k: v for k, v in bad.items() if k in known}
+                errors += len(bad)
+                self.out_queue.put(("health", (self.conn.name, {
+                    "polls": polls, "errors": errors, "cycle_ms": (time.monotonic() - cycle_start) * 1000, "bad": bad, "at": ts})))
+                self.out_queue.put(("conn_status", (self.conn.name, "connected")))
             except Exception as e:
+                errors += 1
                 self.out_queue.put(("conn_status", (self.conn.name, f"error: {e}")))
 
             elapsed = time.monotonic() - cycle_start
@@ -655,38 +987,87 @@ class PollerThread(threading.Thread):
         return {"interface": self.conn.interface, "tags": tags}
 
 
+TLS_CHOICES = [("auto", "Auto (best version both sides support)"), ("1.0", "TLS 1.0 (old, insecure)"), ("1.1", "TLS 1.1 (old, insecure)"),
+               ("1.2", "TLS 1.2"), ("1.3", "TLS 1.3")]
+MQTT_VERSIONS = [("3.1.1", "MQTT 3.1.1"), ("3.1", "MQTT 3.1")]
+QOS_CHOICES = [("0", "0 - at most once"), ("1", "1 - at least once"), ("2", "2 - exactly once")]
+
+
+def build_tls_context(tls_version="auto", ca_cert=None, client_cert=None, client_key=None, verify=True):
+    """The ssl context for an MQTT connection, set like the gateway's TLS page: a fixed version (1.0 to 1.3) or auto, the CA file, the
+    client certificate and key (mutual TLS), and whether the broker's certificate is checked. Reading TLS 1.0 / 1.1 needs an OpenSSL that
+    still allows them: it is asked for, but a modern system may refuse (the connect error then says so)."""
+    import ssl
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    versions = {"1.0": ssl.TLSVersion.TLSv1, "1.1": ssl.TLSVersion.TLSv1_1, "1.2": ssl.TLSVersion.TLSv1_2, "1.3": ssl.TLSVersion.TLSv1_3}
+    if tls_version in versions:
+        if tls_version in ("1.0", "1.1"):
+            try:
+                ctx.set_ciphers("DEFAULT:@SECLEVEL=0")
+            except ssl.SSLError:
+                pass
+        ctx.minimum_version = ctx.maximum_version = versions[tls_version]
+    elif tls_version != "auto":
+        raise ValueError(f"unknown TLS version {tls_version!r}")
+    if verify:
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        if ca_cert:
+            ctx.load_verify_locations(cafile=ca_cert)
+        else:
+            ctx.load_default_certs()
+    else:                                              # for a test broker with its own certificate only: nothing proves who answers
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    if client_cert:
+        ctx.load_cert_chain(certfile=client_cert, keyfile=client_key or None)
+    return ctx
+
+
 class MQTTPublisher:
     def __init__(self):
         self.client = None
         self.connected = False
+        self.qos = 1
+        self.retain = False
+        self.last_error = ""
 
     def connect(self, host, port, client_id, username, password,
-                use_tls, ca_cert, client_cert, client_key):
+                use_tls, ca_cert, client_cert, client_key, tls_version="auto", verify=True,
+                qos=1, retain=False, keepalive=30, clean_session=True, mqtt_version="3.1.1"):
         import paho.mqtt.client as mqtt
 
-        self.client = mqtt.Client(client_id=client_id or f"gw-sim-{uuid.uuid4().hex[:6]}",
-                                   protocol=mqtt.MQTTv311)
+        self.qos, self.retain, self.last_error = int(qos), bool(retain), ""
+        protocol = mqtt.MQTTv31 if mqtt_version == "3.1" else mqtt.MQTTv311
+        # A test must never reuse a production client id (ADR-010): an empty id gets a random one.
+        cid = client_id or f"protoprobe-{uuid.uuid4().hex[:8]}"
+        kwargs = {"client_id": cid, "protocol": protocol, "clean_session": bool(clean_session)}
+        api = getattr(mqtt, "CallbackAPIVersion", None)
+        self.client = mqtt.Client(api.VERSION2, **kwargs) if api else mqtt.Client(**kwargs)
         if username:
             self.client.username_pw_set(username, password or "")
         if use_tls:
-            kwargs = {}
-            if ca_cert:
-                kwargs["ca_certs"] = ca_cert
-            if client_cert:
-                kwargs["certfile"] = client_cert
-            if client_key:
-                kwargs["keyfile"] = client_key
-            self.client.tls_set(**kwargs) if kwargs else self.client.tls_set()
+            try:
+                self.client.tls_set_context(build_tls_context(tls_version, ca_cert, client_cert, client_key, verify))
+            except Exception as exc:
+                self.last_error = f"TLS settings: {exc}"
+                return False
 
-        def on_connect(c, userdata, flags, rc):
-            self.connected = (rc == 0)
+        def on_connect(c, userdata, flags, rc, *extra):
+            self.connected = (getattr(rc, "value", rc) == 0)
+            if not self.connected:
+                self.last_error = f"the broker refused the connection ({rc})"
 
-        def on_disconnect(c, userdata, rc):
+        def on_disconnect(c, userdata, *args):
             self.connected = False
 
         self.client.on_connect = on_connect
         self.client.on_disconnect = on_disconnect
-        self.client.connect(host, port, keepalive=30)
+        try:
+            self.client.connect(host, port, keepalive=int(keepalive))
+        except Exception as exc:                       # includes ssl errors: wrong TLS version, certificate not trusted, refused port
+            self.last_error = str(exc)
+            return False
         self.client.loop_start()
 
         for _ in range(50):
@@ -695,10 +1076,11 @@ class MQTTPublisher:
             time.sleep(0.1)
         return self.connected
 
-    def publish(self, topic, payload_dict, qos=1):
+    def publish(self, topic, payload_dict, qos=None, retain=None):
         if not self.client or not self.connected:
             return False
-        result = self.client.publish(topic, json.dumps(payload_dict), qos=qos)
+        result = self.client.publish(topic, json.dumps(payload_dict), qos=self.qos if qos is None else int(qos),
+                                     retain=self.retain if retain is None else bool(retain))
         result.wait_for_publish(timeout=5)
         return result.is_published()
 
@@ -1019,13 +1401,17 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(btn_row, text="Edit Selected", command=self.open_edit_connection).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Remove Selected", command=self.remove_connection).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Manage Tags", command=self.open_tag_manager).pack(side="left", padx=2)
+        ttk.Button(btn_row, text="Read a Value", command=self.open_quick_read).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Scan for Live Tags", command=self.open_scan_dialog).pack(side="left", padx=2)
+        ttk.Button(btn_row, text="Import tags from file...", command=self.open_import_dialog).pack(side="left", padx=2)
 
         self.conn_tree = ttk.Treeview(
             self, columns=("protocol", "interface", "tags", "status"), show="headings", height=10
         )
-        for col, label, w in [("protocol", "Protocol", 200), ("interface", "Interface", 300),
-                               ("tags", "# Tags", 70), ("status", "Status", 140)]:
+        for colour, hex_colour in HEALTH_COLOURS.items():
+            self.conn_tree.tag_configure(colour, foreground=hex_colour)
+        for col, label, w in [("protocol", "Protocol", 200), ("interface", "Interface", 240),
+                               ("tags", "# Tags", 60), ("status", "Status", 340)]:
             self.conn_tree.heading(col, text=label)
             self.conn_tree.column(col, width=w, anchor="w")
         self.conn_tree.pack(fill="both", expand=True, padx=20, pady=8)
@@ -1040,12 +1426,20 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(ctrl, text="Load Multi-PLC Config", command=self.load_full_config).pack(side="left", padx=4)
 
     def refresh(self):
+        selected = self.conn_tree.selection()
         self.conn_tree.delete(*self.conn_tree.get_children())
         for name, conn in self.app.connections.items():
             iface_str = ", ".join(f"{k}={v}" for k, v in conn.interface.items())
-            self.conn_tree.insert("", "end", iid=name, values=(
-                PROTOCOL_LABELS[conn.protocol], iface_str, len(conn.tags), conn.status
+            plc = getattr(conn, "plc_type", None)
+            colour, text = connection_health(conn.status, getattr(conn, "health", None), len(conn.tags))
+            if not getattr(conn, "enabled", True):
+                colour, text = "grey", "Disabled: not read when polling starts"
+            self.conn_tree.insert("", "end", iid=name, tags=(colour,), values=(
+                PROTOCOL_LABELS[conn.protocol] + (f"  [{plc}]" if plc else ""), iface_str, len(conn.tags), "\u25cf " + text
             ))
+        keep = [n for n in selected if n in self.app.connections]
+        if keep:
+            self.conn_tree.selection_set(keep)
 
     def open_add_connection(self):
         self._connection_dialog(existing=None)
@@ -1060,7 +1454,7 @@ class ConnectionsScreen(ttk.Frame):
     def _connection_dialog(self, existing):
         win = tk.Toplevel(self)
         win.title("Edit Connection" if existing else "Add Connection")
-        win.geometry("460x420")
+        win.geometry("480x660")
         win.grab_set()
 
         ttk.Label(win, text="Connection Name").pack(anchor="w", padx=8, pady=(8, 0))
@@ -1069,6 +1463,16 @@ class ConnectionsScreen(ttk.Frame):
         name_entry.pack(anchor="w", padx=8)
         if existing:
             name_entry.configure(state="disabled")
+
+        ttk.Label(win, text="PLC type (optional: the same list as the gateway's protocol box)").pack(anchor="w", padx=8, pady=(8, 0))
+        type_entries = plc_catalog.dropdown_entries()
+        type_texts = ["(choose the protocol below)"] + [t for t, _ in type_entries]
+        type_key_of = {t: k for t, k in type_entries}
+        type_cb = ttk.Combobox(win, values=type_texts, state="readonly", width=58)
+        existing_type = getattr(existing, "plc_type", None) if existing else None
+        type_cb.set(next((t for t, k in type_entries if k == existing_type), type_texts[0]))
+        type_cb.pack(anchor="w", padx=8)
+        type_overrides = {}                 # interface defaults of the chosen PLC type (for example rack and slot)
 
         ttk.Label(win, text="Protocol").pack(anchor="w", padx=8, pady=(8, 0))
         protocol_cb = ttk.Combobox(win, values=list(PROTOCOL_LABELS.values()), state="readonly", width=35)
@@ -1083,6 +1487,14 @@ class ConnectionsScreen(ttk.Frame):
         hint_label = ttk.Label(win, text="", foreground="gray", wraplength=440, justify="left")
         hint_label.pack(anchor="w", padx=8, pady=(0, 4))
 
+        extra = ttk.Frame(win)
+        extra.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Label(extra, text="Poll every (s)").pack(side="left")
+        poll_var = tk.StringVar(value=str(existing.poll_interval_s if existing else 2.0))
+        ttk.Entry(extra, textvariable=poll_var, width=7).pack(side="left", padx=6)
+        enabled_var = tk.BooleanVar(value=existing.enabled if existing else True)
+        ttk.Checkbutton(extra, text="Enabled (read it when polling starts)", variable=enabled_var).pack(side="left", padx=12)
+
         def render_fields(*_):
             for child in fields_frame.winfo_children():
                 child.destroy()
@@ -1094,11 +1506,16 @@ class ConnectionsScreen(ttk.Frame):
                 ttk.Label(row, text=label, width=16).pack(side="left")
                 e = ttk.Entry(row, width=25)
                 val = str(existing.interface.get(label, default)) if existing else default
+                if label in type_overrides:
+                    val = str(type_overrides[label])
                 e.insert(0, val)
                 e.pack(side="left")
                 field_entries[label] = e
 
-            if protocol_key == "bacnet_ip":
+            chosen = type_key_of.get(type_cb.get())
+            if chosen:
+                hint_label.configure(text=plc_catalog.describe(chosen))
+            elif protocol_key == "bacnet_ip":
                 hint_label.configure(
                     text="local_ip = this laptop's own IP (for ProtoProbe's identity on the "
                          "network). device_ip = the target BACnet device's IP. device_instance "
@@ -1110,7 +1527,23 @@ class ConnectionsScreen(ttk.Frame):
             else:
                 hint_label.configure(text="")
 
-        protocol_cb.bind("<<ComboboxSelected>>", render_fields)
+        def type_chosen(*_):
+            type_overrides.clear()
+            key = type_key_of.get(type_cb.get())
+            if key:
+                plc = plc_catalog.get(key)
+                if plc.driver:
+                    protocol_cb.set(PROTOCOL_LABELS[plc.driver])
+                    type_overrides.update(plc.interface)
+            render_fields()
+
+        def protocol_chosen(*_):
+            type_cb.set(type_texts[0])          # choosing a protocol by hand means no PLC type
+            type_overrides.clear()
+            render_fields()
+
+        type_cb.bind("<<ComboboxSelected>>", type_chosen)
+        protocol_cb.bind("<<ComboboxSelected>>", protocol_chosen)
         render_fields()
 
         def save():
@@ -1118,17 +1551,32 @@ class ConnectionsScreen(ttk.Frame):
             if not name:
                 messagebox.showerror("Invalid", "Connection name required")
                 return
+            chosen_type = type_key_of.get(type_cb.get())
+            if chosen_type and not plc_catalog.get(chosen_type).driver:
+                messagebox.showinfo("Not supported yet", f"ProtoProbe cannot connect to {plc_catalog.get(chosen_type).label} yet.\n"
+                                    "Pick another PLC type, or choose the protocol by hand below.")
+                return
             protocol_key = label_to_key[protocol_cb.get()]
             interface = {k: coerce(e.get().strip()) for k, e in field_entries.items()}
+            try:
+                poll = float(poll_var.get())
+                if not workspace.POLL_MIN_S <= poll <= workspace.POLL_MAX_S:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Invalid", f"Poll interval must be a number of seconds between {workspace.POLL_MIN_S} and {workspace.POLL_MAX_S:g}")
+                return
 
             if existing:
                 existing.protocol = protocol_key
                 existing.interface = interface
+                existing.plc_type = chosen_type
+                existing.poll_interval_s = poll
+                existing.enabled = enabled_var.get()
             else:
                 if name in self.app.connections:
                     messagebox.showerror("Duplicate", f"Connection '{name}' already exists")
                     return
-                self.app.connections[name] = Connection(name, protocol_key, interface)
+                self.app.connections[name] = Connection(name, protocol_key, interface, chosen_type, enabled_var.get(), poll)
 
             self.refresh()
             self.app.refresh_dashboard()
@@ -1142,6 +1590,333 @@ class ConnectionsScreen(ttk.Frame):
             self.app.connections.pop(name, None)
         self.refresh()
         self.app.refresh_dashboard()
+
+    def _s7_guided_dialog(self, parent, conn, on_saved, quick=False, existing=None):
+        """Add one Siemens tag the way the gateway's own dialog does it: pick the register type, enter the address, see the address spelled out,
+        choose the data type, press Test read to see the value right away."""
+        win = tk.Toplevel(parent)
+        win.title(f"Read a value -- {conn.name}" if quick else "Edit Siemens tag" if existing else "Add Siemens tag")
+        win.geometry("1140x700" if quick else "640x640")
+        if not quick:
+            win.grab_set()
+        box = ttk.Frame(win)                         # the form; in quick mode the watch list sits to its right
+        if quick:
+            box.pack(side="left", fill="y")
+            side = ttk.Frame(win)
+            side.pack(side="left", fill="both", expand=True, padx=(0, 10), pady=10)
+        else:
+            box.pack(fill="both", expand=True)
+
+        ttk.Label(box, text="Tag name (used if you add it as a tag)" if quick else "Tag name").pack(anchor="w", padx=10, pady=(10, 0))
+        name_var = tk.StringVar(value=f"Tag{len(conn.tags) + 1}")
+        ttk.Entry(box, textvariable=name_var, width=40).pack(anchor="w", padx=10)
+
+        ttk.Label(box, text="1. Choose the register type", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
+        grid = ttk.Frame(box)
+        grid.pack(anchor="w", padx=10)
+        choice = tk.StringVar(value="M|bit")
+        titles = {"bit": "Bit (1 bit)", "byte": "Byte (8 bit)", "word": "Word (16 bit)", "dword": "DWord (32 bit)"}
+        for c, width in enumerate(s7_address.WIDTHS, start=1):
+            ttk.Label(grid, text=titles[width]).grid(row=0, column=c, padx=4, pady=2)
+        labels = {"I": ("I", "IB", "IW", "ID"), "Q": ("Q", "QB", "QW", "QD"), "M": ("M", "MB", "MW", "MD"),
+                  "DB": ("DBn.DBX", "DBn.DBB", "DBn.DBW", "DBn.DBD")}
+        rows = {"I": "I (Input)", "Q": "Q (Output)", "M": "M (Bit memory)", "DB": "DB (Data block)"}
+        for r, area in enumerate(s7_address.AREAS, start=1):
+            ttk.Label(grid, text=rows[area], width=16).grid(row=r, column=0, sticky="w")
+            for c, width in enumerate(s7_address.WIDTHS, start=1):
+                ttk.Radiobutton(grid, text=labels[area][c - 1], style="Toolbutton", width=9, variable=choice, value=f"{area}|{width}",
+                                state="normal" if s7_address.readable(width) else "disabled").grid(row=r, column=c, padx=3, pady=2)
+        ttk.Label(box, text="Byte values (IB, MB, DBB) are greyed out: ProtoProbe cannot read single bytes yet.", foreground="gray").pack(
+            anchor="w", padx=10)
+
+        ttk.Label(box, text="2. Enter the address", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
+        addr = ttk.Frame(box)
+        addr.pack(anchor="w", padx=10)
+        db_var, byte_var, bit_var = tk.StringVar(value="1"), tk.StringVar(value="0"), tk.StringVar(value="0")
+        ttk.Label(addr, text="DB number").grid(row=0, column=0, padx=4)
+        db_entry = ttk.Entry(addr, textvariable=db_var, width=8)
+        db_entry.grid(row=1, column=0, padx=4)
+        ttk.Label(addr, text="Byte offset").grid(row=0, column=1, padx=4)
+        ttk.Entry(addr, textvariable=byte_var, width=8).grid(row=1, column=1, padx=4)
+        ttk.Label(addr, text="Bit (0-7)").grid(row=0, column=2, padx=4)
+        bit_entry = ttk.Entry(addr, textvariable=bit_var, width=8)
+        bit_entry.grid(row=1, column=2, padx=4)
+
+        preview = ttk.Label(box, text="", font=("Consolas", 12, "bold"))
+        preview.pack(anchor="w", padx=10, pady=(10, 0))
+
+        ttk.Label(box, text="3. Data type and scaling", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(12, 2))
+        dt = ttk.Frame(box)
+        dt.pack(anchor="w", padx=10)
+        type_var, scale_var, offset_var, unit_var = tk.StringVar(), tk.StringVar(value="1"), tk.StringVar(value="0"), tk.StringVar()
+        ttk.Label(dt, text="Data type").grid(row=0, column=0, sticky="w", padx=4)
+        type_cb = ttk.Combobox(dt, textvariable=type_var, state="readonly", width=18)
+        type_cb.grid(row=0, column=1, padx=4)
+        for i, (text, var) in enumerate((("Scale", scale_var), ("Offset", offset_var), ("Unit", unit_var)), start=1):
+            ttk.Label(dt, text=text).grid(row=i, column=0, sticky="w", padx=4, pady=2)
+            ttk.Entry(dt, textvariable=var, width=20).grid(row=i, column=1, padx=4, pady=2)
+
+        value_label = ttk.Label(box, text="", font=("Segoe UI", 22, "bold"))
+        if quick:
+            value_label.pack(anchor="w", padx=10, pady=(10, 0))
+        result = ttk.Label(box, text="", wraplength=600, justify="left")
+        result.pack(anchor="w", padx=10, pady=(4, 0))
+
+        def current():
+            area, width = choice.get().split("|")
+            return area, width
+
+        def build():
+            area, width = current()
+            return s7_address.build_tag(name_var.get(), area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0,
+                                        type_var.get() or None, float(scale_var.get() or 1), float(offset_var.get() or 0), unit_var.get().strip())
+
+        def update(*_):
+            area, width = current()
+            options = s7_address.data_types_for(width)
+            type_cb.configure(values=options)
+            if type_var.get() not in options:
+                type_var.set(options[0] if options else "")
+            db_entry.configure(state="normal" if area == "DB" else "disabled")
+            bit_entry.configure(state="normal" if width == "bit" else "disabled")
+            try:
+                text = s7_address.address_text(area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0)
+                preview.configure(text=f"{text}   ({s7_address.friendly_type(type_var.get())})", foreground="#2e7d32")
+            except ValueError as exc:
+                preview.configure(text=str(exc), foreground="#c62828")
+
+        for var in (choice, db_var, byte_var, bit_var, type_var):
+            var.trace_add("write", update)
+        update()
+        def fill_from(tag):
+            """Put an existing tag's register, address, type and scaling into the form."""
+            old_type = tag.get("data_type", "int16")
+            old_width = "bit" if old_type == "bit" else "dword" if ("32" in old_type) else "word"
+            name_var.set(tag["name"])
+            db_var.set(str(tag.get("db_number") or 1))
+            byte_var.set(str(tag.get("start_byte", 0)))
+            bit_var.set(str(tag.get("bit_offset", 0)))
+            choice.set(f"{tag.get('area', 'M')}|{old_width}")
+            if old_type not in s7_address.data_types_for(old_width):
+                type_cb.configure(values=s7_address.data_types_for(old_width) + [old_type])
+            type_var.set(old_type)
+            scale_var.set(str(tag.get("multiplier", 1.0)))
+            offset_var.set(str(tag.get("offset", 0.0)))
+            unit_var.set(str(tag.get("unit", "")))
+            update()
+
+        if existing:                                  # editing: start from what the tag is now
+            fill_from(existing)
+
+        test_queue = queue.Queue()
+        keep_var = tk.BooleanVar(value=False)
+        busy = {"reading": False}
+
+        def test_read(*_):
+            if busy["reading"] or not win.winfo_exists():
+                return
+            try:
+                tag = build()
+            except ValueError as exc:
+                result.configure(text=str(exc), foreground="#c62828")
+                return
+            busy["reading"] = True
+            result.configure(text="Reading...", foreground="gray")
+
+            def worker():
+                test_queue.put(read_tag_once(conn, tag))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+            def check():
+                if not win.winfo_exists():
+                    return
+                try:
+                    value, error = test_queue.get_nowait()
+                except queue.Empty:
+                    win.after(100, check)
+                    return
+                busy["reading"] = False
+                stamp = time.strftime("%H:%M:%S")
+                if error is None:
+                    value_label.configure(text=str(show_value(value)), foreground="#2e7d32")
+                    result.configure(text=f"\u25cf Read OK  ({stamp})", foreground="#2e7d32")
+                else:
+                    hint = explain_s7_error(error)
+                    value_label.configure(text="--", foreground="#c62828")
+                    result.configure(text=f"\u25cf Read failed ({stamp}): {error}" + (f"\n{hint}" if hint else ""), foreground="#c62828")
+                if keep_var.get():
+                    win.after(1000, test_read)
+
+            win.after(100, check)
+
+        def keep_toggled(*_):
+            if keep_var.get():
+                test_read()
+
+        def save():
+            try:
+                tag = build()
+            except ValueError as exc:
+                messagebox.showerror("Cannot add", str(exc))
+                return
+            if existing:
+                if any(t["name"] == tag["name"] and t is not existing for t in conn.tags):
+                    messagebox.showerror("Duplicate", f"Tag '{tag['name']}' already exists")
+                    return
+                conn.latest_values.pop(existing["name"], None)
+                existing.clear()
+                existing.update(tag)                  # the same dict: everything that holds this tag sees the change
+                on_saved()
+                win.destroy()
+                return
+            if any(t["name"] == tag["name"] for t in conn.tags):
+                messagebox.showerror("Duplicate", f"Tag '{tag['name']}' already exists")
+                return
+            conn.tags.append(tag)
+            on_saved()
+            win.destroy()
+
+        if quick:
+            ttk.Label(side, text="Values to watch (several at once)", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 4))
+            cols = ("name", "address", "value", "quality")
+            watch = ttk.Treeview(side, columns=cols, show="headings", height=14, selectmode="extended")
+            for col, text, width in (("name", "Name", 140), ("address", "Address", 100), ("value", "Value", 190), ("quality", "Quality", 60)):
+                watch.heading(col, text=text)
+                watch.column(col, width=width, anchor="w" if col == "name" else "center")
+            for colour, hex_colour in HEALTH_COLOURS.items():
+                watch.tag_configure(colour, foreground=hex_colour)
+            watch.pack(fill="both", expand=True)
+            watch_status = ttk.Label(side, text="Press 'Add to list' to put the address on the left into the list.", foreground="gray",
+                                     wraplength=420, justify="left")
+            watch_status.pack(anchor="w", pady=(6, 0))
+            watched = []                             # tag dicts, in the order of the list
+            list_keep = tk.BooleanVar(value=False)
+            list_busy = {"reading": False}
+            list_results = queue.Queue()
+
+            def add_to_list():
+                try:
+                    tag = build()
+                except ValueError as exc:
+                    watch_status.configure(text=str(exc), foreground="#c62828")
+                    return
+                area, width = current()
+                address = s7_address.address_text(area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0)
+                if any(t["name"] == tag["name"] for t in watched):
+                    tag["name"] = f"{tag['name']}_{address}"
+                if any(t["name"] == tag["name"] for t in watched):
+                    watch_status.configure(text=f"'{tag['name']}' is already in the list.", foreground="#c62828")
+                    return
+                tag["_address"] = address
+                watched.append(tag)
+                watch.insert("", "end", iid=tag["name"], tags=("grey",), values=(tag["name"], address, "", "--"))
+                watch_status.configure(text=f"{len(watched)} value(s) in the list.", foreground="gray")
+                name_var.set(f"Tag{len(conn.tags) + len(watched) + 1}")
+
+            def load_selected(*_):
+                sel = watch.selection()
+                if sel:
+                    fill_from(next(t for t in watched if t["name"] == sel[0]))
+                    watch_status.configure(text="Loaded into the form: change it, then press 'Update selected'.", foreground="gray")
+
+            def update_selected():
+                sel = watch.selection()
+                if not sel:
+                    watch_status.configure(text="Select a row in the list first (double-click loads it into the form).", foreground="#c62828")
+                    return
+                try:
+                    tag = build()
+                except ValueError as exc:
+                    watch_status.configure(text=str(exc), foreground="#c62828")
+                    return
+                area, width = current()
+                index = next(i for i, t in enumerate(watched) if t["name"] == sel[0])
+                if any(t["name"] == tag["name"] for i, t in enumerate(watched) if i != index):
+                    watch_status.configure(text=f"'{tag['name']}' is already in the list.", foreground="#c62828")
+                    return
+                tag["_address"] = s7_address.address_text(area, width, db_var.get() or 0, byte_var.get() or 0, bit_var.get() or 0)
+                watched[index] = tag
+                watch.delete(sel[0])
+                watch.insert("", index, iid=tag["name"], tags=("grey",), values=(tag["name"], tag["_address"], "", "--"))
+                watch.selection_set(tag["name"])
+                watch_status.configure(text=f"Updated: {tag['name']} is now {tag['_address']}.", foreground="gray")
+
+            watch.bind("<Double-1>", load_selected)
+            watch.bind("<Return>", load_selected)          # the same from the keyboard
+
+            def remove_from_list():
+                for iid in watch.selection():
+                    watched[:] = [t for t in watched if t["name"] != iid]
+                    watch.delete(iid)
+
+            def read_list(*_):
+                if list_busy["reading"] or not win.winfo_exists() or not watched:
+                    return
+                list_busy["reading"] = True
+                tags = [{k: v for k, v in t.items() if k != "_address"} for t in watched]
+                threading.Thread(target=lambda: list_results.put(read_tags_once(conn, tags)), daemon=True).start()
+
+                def check():
+                    if not win.winfo_exists():
+                        return
+                    try:
+                        results = list_results.get_nowait()
+                    except queue.Empty:
+                        win.after(100, check)
+                        return
+                    list_busy["reading"] = False
+                    good = 0
+                    for tag in watched:
+                        if tag["name"] not in watch.get_children():
+                            continue
+                        value, error = results.get(tag["name"], (None, "no value"))
+                        if error is None:
+                            good += 1
+                        watch.item(tag["name"], tags=(("green" if error is None else "red"),),
+                                   values=(tag["name"], tag["_address"], show_value(value) if error is None else str(error).replace("Read operation failed: ", ""),
+                                   "Good" if error is None else "Bad"))
+                    watch_status.configure(text=f"\u25cf {good} of {len(watched)} read OK  ({time.strftime('%H:%M:%S')})",
+                                           foreground="#2e7d32" if good == len(watched) else "#e0a100" if good else "#c62828")
+                    if list_keep.get():
+                        win.after(1000, read_list)
+
+                win.after(100, check)
+
+            def save_list():
+                added = 0
+                for tag in watched:
+                    if any(t["name"] == tag["name"] for t in conn.tags):
+                        continue
+                    conn.tags.append({k: v for k, v in tag.items() if k != "_address"})
+                    added += 1
+                if added:
+                    on_saved()
+                watch_status.configure(text=f"{added} tag(s) added to the connection.", foreground="gray")
+
+            row = ttk.Frame(side)
+            row.pack(fill="x", pady=(8, 0))
+            ttk.Button(row, text="Add to list", command=add_to_list).pack(side="left")
+            ttk.Button(row, text="Update selected", command=update_selected).pack(side="left", padx=(6, 0))
+            ttk.Button(row, text="Remove selected", command=remove_from_list).pack(side="left", padx=6)
+            ttk.Button(row, text="Read list now", command=read_list).pack(side="left")
+            row2 = ttk.Frame(side)
+            row2.pack(fill="x", pady=(6, 0))
+            ttk.Checkbutton(row2, text="Keep reading the list (every second)", variable=list_keep,
+                            command=lambda: read_list() if list_keep.get() else None).pack(side="left")
+            ttk.Button(row2, text="Add all as tags", command=save_list).pack(side="right")
+
+        buttons = ttk.Frame(box)
+        buttons.pack(anchor="e", padx=10, pady=14, fill="x")
+        ttk.Button(buttons, text="Read now" if quick else "Test read", command=test_read).pack(side="left")
+        if quick:
+            ttk.Checkbutton(buttons, text="Keep reading (every second)", variable=keep_var, command=keep_toggled).pack(side="left", padx=12)
+            ttk.Button(buttons, text="Close", command=win.destroy).pack(side="right", padx=4)
+            ttk.Button(buttons, text="Add as tag", command=save).pack(side="right", padx=4)
+        else:
+            ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right", padx=4)
+            ttk.Button(buttons, text="Save" if existing else "OK", command=save).pack(side="right", padx=4)
+        return win
 
     def open_tag_manager(self):
         sel = self.conn_tree.selection()
@@ -1243,7 +2018,19 @@ class ConnectionsScreen(ttk.Frame):
 
         btn_row = ttk.Frame(win)
         btn_row.pack(fill="x", padx=8, pady=4)
-        ttk.Button(btn_row, text="Add Tag", command=lambda: tag_dialog(None)).pack(side="left", padx=2)
+        def add_tag():
+            if conn.protocol == "s7comm":
+                def saved():
+                    refresh_tags()
+                    self.refresh()
+                    self.app.refresh_dashboard()
+                self._s7_guided_dialog(win, conn, saved)
+            else:
+                tag_dialog(None)
+
+        ttk.Button(btn_row, text="Add Tag", command=add_tag).pack(side="left", padx=2)
+        if conn.protocol == "s7comm":
+            ttk.Button(btn_row, text="Add Tag (fields)", command=lambda: tag_dialog(None)).pack(side="left", padx=2)
 
         def edit_selected():
             sel2 = tree.selection()
@@ -1304,6 +2091,145 @@ class ConnectionsScreen(ttk.Frame):
 
         tree.bind("<Double-1>", lambda e: edit_selected())
 
+    def open_import_dialog(self, path=None):
+        """Find tag candidates in an Excel/CSV list or a text PDF and add the ticked ones to the selected connection (reads text only)."""
+        sel = self.conn_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a connection", "Click a connection's row above first: the tags are added to it.")
+            return None
+        conn = self.app.connections[sel[0]]
+        if path is None:
+            path = filedialog.askopenfilename(title="Tag list, export or PDF", filetypes=[
+                ("Tag lists", "*.xlsx *.xlsm *.csv *.txt *.tsv *.pdf"), ("All files", "*.*")])
+            if not path:
+                return None
+        res = tag_import.load(path)
+        win = tk.Toplevel(self)
+        win.title(f"Import tags -- {conn.name}")
+        win.geometry("1000x560")
+        ttk.Label(win, wraplength=960, foreground="gray", justify="left",
+                  text="ProtoProbe found LINES with an address in this file. Every row is a guess to confirm on the machine: it reads text only, "
+                       "a PDF cannot be turned back into ladder logic, and a scanned PDF has no text. Rows that do not fit this connection's "
+                       "protocol cannot be added.").pack(anchor="w", padx=12, pady=(10, 4))
+        msg = ttk.Label(win, text=res["error"] or f"{len(res['candidates'])} candidate(s) in {os.path.basename(path)}",
+                        foreground="#c0392b" if res["error"] else "gray")
+        msg.pack(anchor="w", padx=12)
+        cols = ("name", "address", "type", "role", "fits", "comment", "note")
+        tree = ttk.Treeview(win, columns=cols, show="headings", selectmode="extended")
+        for col, label, w in (("name", "Name", 150), ("address", "Address", 100), ("type", "Type", 60), ("role", "Suggested use", 190),
+                              ("fits", "Fits this connection", 110), ("comment", "Comment", 220), ("note", "Note", 180)):
+            tree.heading(col, text=label)
+            tree.column(col, width=w, anchor="w")
+        tree.pack(fill="both", expand=True, padx=12, pady=6)
+        cands = tag_import.sort_best_first(res["candidates"])
+        for i, c in enumerate(cands):
+            ok = tag_import.fits(conn.protocol, c)
+            tree.insert("", "end", iid=str(i), values=(c["name"], c["address"], c["type"], c["why"].split(":")[0] if c["why"] else "",
+                                                       "yes" if ok else "no", c["comment"], c["why_not"] or c["source"]))
+        win.import_tree, win.import_cands, win.import_conn = tree, cands, conn
+
+        def add(output):
+            chosen = [cands[int(i)] for i in tree.selection()]
+            if not chosen:
+                messagebox.showinfo("Select rows", "Select one or more rows first.", parent=win)
+                return
+            added, already, misfit = tag_import.add_to_connection(conn, chosen, output=output)
+            self.refresh()
+            self.app.refresh_dashboard()
+            if "live_values" in self.app.screens:
+                self.app.screens["live_values"].refresh()
+            messagebox.showinfo("Added", f"Added {added} tag(s); {already} already existed; {misfit} did not fit this connection.\n"
+                                         "Check data types before relying on them.", parent=win)
+        win.import_add = add
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=12, pady=(0, 10))
+        ttk.Button(row, text="Add selected", command=lambda: add(False)).pack(side="left")
+        ttk.Button(row, text="Add + include in output JSON", command=lambda: add(True)).pack(side="left", padx=6)
+        ttk.Button(row, text="Close", command=win.destroy).pack(side="right")
+        return win
+
+    def open_quick_read(self, parent=None):
+        """Read ONE value of the selected connection, the way the gateway's own interface lets you: pick the register type, enter the address,
+        see the value (and keep it updating) without making a tag first."""
+        sel = self.conn_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a connection", "Click a connection's row above first")
+            return
+        conn = self.app.connections[sel[0]]
+        if conn.protocol == "s7comm":
+            def saved():
+                self.refresh()
+                self.app.refresh_dashboard()
+                messagebox.showinfo("Tag added", "Added to this connection's tags. It will show on Live values once polling is started.")
+            return self._s7_guided_dialog(parent or self, conn, saved, quick=True)
+        return self._generic_quick_read(conn, parent)
+
+    def _generic_quick_read(self, conn, parent=None):
+        """The same one-value reader for the other protocols: the tag fields of the protocol, then Read now."""
+        win = tk.Toplevel(parent or self)
+        win.title(f"Read a value -- {conn.name}")
+        win.geometry("520x420")
+        entries = {}
+        for label, default in TAG_FIELDS.get(conn.protocol, []):
+            row = ttk.Frame(win)
+            row.pack(fill="x", padx=10, pady=3)
+            ttk.Label(row, text=label, width=16).pack(side="left")
+            if label in FIELD_OPTIONS:
+                e = ttk.Combobox(row, values=FIELD_OPTIONS[label]["options"], width=20, state="readonly")
+                e.set(default)
+            else:
+                e = ttk.Entry(row, width=24)
+                e.insert(0, str(default))
+            e.pack(side="left")
+            entries[label] = e
+        value_label = ttk.Label(win, text="", font=("Segoe UI", 22, "bold"))
+        value_label.pack(anchor="w", padx=10, pady=(12, 0))
+        result = ttk.Label(win, text="", wraplength=490, justify="left")
+        result.pack(anchor="w", padx=10)
+        keep_var = tk.BooleanVar(value=False)
+        results = queue.Queue()
+        busy = {"reading": False}
+
+        def read_now(*_):
+            if busy["reading"] or not win.winfo_exists():
+                return
+            tag = {"name": "quick"}
+            for k, e in entries.items():
+                raw = e.get().strip()
+                tag[k] = raw if k in FIELD_OPTIONS else coerce(raw)
+            busy["reading"] = True
+            result.configure(text="Reading...", foreground="gray")
+            threading.Thread(target=lambda: results.put(read_tag_once(conn, tag)), daemon=True).start()
+
+            def check():
+                if not win.winfo_exists():
+                    return
+                try:
+                    value, error = results.get_nowait()
+                except queue.Empty:
+                    win.after(100, check)
+                    return
+                busy["reading"] = False
+                stamp = time.strftime("%H:%M:%S")
+                if error is None:
+                    value_label.configure(text=str(show_value(value)), foreground="#2e7d32")
+                    result.configure(text=f"\u25cf Read OK  ({stamp})", foreground="#2e7d32")
+                else:
+                    value_label.configure(text="--", foreground="#c62828")
+                    result.configure(text=f"\u25cf Read failed ({stamp}): {error}", foreground="#c62828")
+                if keep_var.get():
+                    win.after(1000, read_now)
+
+            win.after(100, check)
+
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=10, pady=14)
+        ttk.Button(row, text="Read now", command=read_now).pack(side="left")
+        ttk.Checkbutton(row, text="Keep reading (every second)", variable=keep_var,
+                        command=lambda: read_now() if keep_var.get() else None).pack(side="left", padx=12)
+        ttk.Button(row, text="Close", command=win.destroy).pack(side="right")
+        return win
+
     def open_scan_dialog(self):
         sel = self.conn_tree.selection()
         if not sel:
@@ -1322,7 +2248,7 @@ class ConnectionsScreen(ttk.Frame):
 
         win = tk.Toplevel(self)
         win.title(f"Scan for live tags -- {conn.name}")
-        win.geometry("640x560")
+        win.geometry("640x850")
         win.grab_set()
 
         ttk.Label(
@@ -1334,6 +2260,8 @@ class ConnectionsScreen(ttk.Frame):
             wraplength=600, foreground="gray", justify="left",
         ).pack(anchor="w", padx=10, pady=(10, 10))
 
+        ttk.Button(win, text="Read one value instead...", command=lambda: self.open_quick_read(win)).pack(anchor="w", padx=10, pady=(0, 4))
+
         opt_row = ttk.Frame(win)
         opt_row.pack(fill="x", padx=10, pady=4)
         ttk.Label(opt_row, text="Snapshots").pack(side="left")
@@ -1344,6 +2272,17 @@ class ConnectionsScreen(ttk.Frame):
         delay_entry = ttk.Entry(opt_row, width=6)
         delay_entry.insert(0, "2")
         delay_entry.pack(side="left", padx=(2, 12))
+
+        presets = plc_catalog.scan_presets(getattr(conn, "plc_type", None) or plc_catalog.default_type(conn.protocol))
+        if presets:
+            preset_row = ttk.Frame(win)
+            preset_row.pack(fill="x", padx=10, pady=(4, 0))
+            ttk.Label(preset_row, text="Preset").pack(side="left")
+            preset_cb = ttk.Combobox(preset_row, values=["(none)"] + [p.label for p in presets], state="readonly", width=56)
+            preset_cb.set("(none)")
+            preset_cb.pack(side="left", padx=6)
+            preset_note = ttk.Label(win, text="", foreground="gray", wraplength=600, justify="left")
+            preset_note.pack(anchor="w", padx=10)
 
         # ---- Section 1: single area/range (a quick, targeted check) ----
         single_frame = ttk.LabelFrame(win, text="Scan a single area/range")
@@ -1383,10 +2322,10 @@ class ConnectionsScreen(ttk.Frame):
 
         if conn.protocol == "s7comm":
             ttk.Label(
-                single_frame, text="Note: for area I/Q, manual entry in Manage Tags is usually "
-                          "better -- those bits map to physical wiring you probably already "
-                          "have documented. M has no wiring to reference, so scanning it is "
-                          "worthwhile. db_number is ignored unless area = DB.",
+                single_frame, text="Note: scanning I or Q shows which bits are on and which changed; use 'Add selected' "
+                          "in the results to make bit tags from them. Markers (M) have no wiring to "
+                          "check against, so scanning them is the way to find what moves. "
+                          "db_number is ignored unless area = DB.",
                 wraplength=600, foreground="gray", justify="left",
             ).pack(anchor="w", padx=8, pady=(0, 4))
 
@@ -1398,8 +2337,10 @@ class ConnectionsScreen(ttk.Frame):
             max_db_entry.pack(side="left", padx=4)
             discover_btn = ttk.Button(discover_frame, text="Discover DBs")
             discover_btn.pack(side="left", padx=8)
-            discover_status = ttk.Label(discover_frame, text="", foreground="gray", wraplength=380, justify="left")
-            discover_status.pack(side="left", padx=8)
+            # On its own full-width line: the messages (an error and its hint) are long and were cut off at the window edge when they
+            # shared the row with the button.
+            discover_status = ttk.Label(single_frame, text="", foreground="gray", wraplength=590, justify="left")
+            discover_status.pack(anchor="w", padx=8, pady=(0, 2))
 
             discovered_list = tk.Listbox(single_frame, height=3, font=("Consolas", 9))
             discovered_list.pack(fill="x", padx=8, pady=(0, 4))
@@ -1527,9 +2468,8 @@ class ConnectionsScreen(ttk.Frame):
                 ttk.Checkbutton(code_row, text=area, variable=v).pack(side="left", padx=6)
                 checkbox_vars[area] = v
             ttk.Label(
-                full_frame, text="DB auto-discovers which DB numbers exist first. I/Q left "
-                          "unchecked by default -- manual entry from wiring docs is usually "
-                          "better for those.",
+                full_frame, text="DB auto-discovers which DB numbers exist first (a DB with optimized "
+                          "block access cannot be read and is reported). I and Q rows show bits.",
                 wraplength=600, foreground="gray", justify="left",
             ).pack(anchor="w", padx=8, pady=(2, 0))
             max_row = ttk.Frame(full_frame)
@@ -1553,6 +2493,32 @@ class ConnectionsScreen(ttk.Frame):
             max_addr_entry = ttk.Entry(max_row, width=8)
             max_addr_entry.insert(0, "2000")
             max_addr_entry.pack(side="left", padx=6)
+
+        if presets:
+            def apply_preset(*_):
+                chosen = next((p for p in presets if p.label == preset_cb.get()), None)
+                if chosen is None:
+                    preset_note.configure(text="")
+                    return
+                for key, value in chosen.single.items():
+                    entry = range_entries.get(key)
+                    if entry is None:
+                        continue
+                    if isinstance(entry, ttk.Combobox):
+                        entry.set(str(value))
+                    else:
+                        entry.delete(0, "end")
+                        entry.insert(0, str(value))
+                if chosen.full:
+                    for key, var in checkbox_vars.items():
+                        var.set(key in chosen.full.get("include", ()))
+                    if "max" in chosen.full:
+                        max_addr_entry.delete(0, "end")
+                        max_addr_entry.insert(0, str(chosen.full["max"]))
+                preset_note.configure(text=chosen.note + ("  (fills the whole-PLC section below; press Start full PLC scan)" if chosen.full else
+                                                          "  (fills the single-area fields; press Start scan)"))
+
+            preset_cb.bind("<<ComboboxSelected>>", apply_preset)
 
         def start_full_scan():
             selected = [k for k, v in checkbox_vars.items() if v.get()]
@@ -1789,12 +2755,9 @@ class ConnectionsScreen(ttk.Frame):
             return
         any_started = False
         for conn in self.app.connections.values():
-            if not conn.tags:
+            if not conn.tags or not getattr(conn, "enabled", True):
                 continue
-            merge_interval = float(self.app.output_screen.merge_interval_entry.get().strip() or 5) \
-                if self.app.output_screen else 5.0
-            poll_interval = min(merge_interval, 2.0)
-            thread = PollerThread(conn, poll_interval, self.app.out_queue)
+            thread = PollerThread(conn, getattr(conn, "poll_interval_s", 2.0), self.app.out_queue)
             conn.thread = thread
             thread.start()
             any_started = True
@@ -1878,32 +2841,199 @@ class LiveValuesScreen(ttk.Frame):
         self.app = app
         ttk.Label(self, text="Live values", font=("Segoe UI", 16)).pack(anchor="w", padx=20, pady=(20, 12))
 
-        columns = ("connection", "protocol", "tag", "address", "data_type", "value", "updated")
-        self.live_tree = ttk.Treeview(self, columns=columns, show="headings", height=20)
+        # One line per connection: a coloured dot and what the poller reports (green = connected and every tag reads).
+        self.health_frame = ttk.Frame(self)
+        self.health_frame.pack(fill="x", padx=20, pady=(0, 6))
+
+        columns = ("output", "connection", "tag", "address", "data_type", "value", "quality", "updated", "error")
+        self.live_tree = ttk.Treeview(self, columns=columns, show="headings", height=10)
         headings = [
-            ("connection", "Connection", 130), ("protocol", "Protocol", 140),
-            ("tag", "Tag", 150), ("address", "Address / fields", 220),
-            ("data_type", "Data type", 90), ("value", "Live value", 110),
-            ("updated", "Last updated", 100),
+            ("output", "In output JSON", 130), ("connection", "Connection", 110), ("tag", "Tag", 140), ("address", "Address", 110),
+            ("data_type", "Data type", 80), ("value", "Live value", 100), ("quality", "Quality", 70),
+            ("updated", "Last updated", 90), ("error", "Error", 300),
         ]
         for col, label, w in headings:
             self.live_tree.heading(col, text=label)
-            self.live_tree.column(col, width=w, anchor="center")
+            self.live_tree.column(col, width=w, anchor="w" if col in ("error", "output") else "center")
+        for colour, hex_colour in HEALTH_COLOURS.items():
+            self.live_tree.tag_configure(colour, foreground=hex_colour)
         self.live_tree.pack(fill="both", expand=True, padx=20, pady=8)
+        self.live_tree.bind("<Double-1>", lambda e: self.edit_selected_tag())
+
+        # Tick tags for the copy-and-paste output JSON (deployment_id, gateway_id, machine_id, timestamp, data).
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", padx=20, pady=(0, 4))
+        ttk.Button(bar, text="Include selected in output JSON", command=self.include_selected).pack(side="left")
+        ttk.Button(bar, text="Remove selected", command=self.remove_selected).pack(side="left", padx=6)
+        self.out_mode = tk.StringVar(value="values")
+        ttk.Radiobutton(bar, text="Show live values", variable=self.out_mode, value="values", command=self.render_output).pack(side="left", padx=(16, 4))
+        ttk.Radiobutton(bar, text="Show names only (template)", variable=self.out_mode, value="names", command=self.render_output).pack(side="left")
+        ttk.Button(bar, text="Copy JSON", command=self.copy_output).pack(side="right")
+        ids = ttk.Frame(self)
+        ids.pack(fill="x", padx=20, pady=(0, 4))
+        self.out_ids = {}
+        for key in output_json.KEYS:
+            ttk.Label(ids, text=key).pack(side="left")
+            var = tk.StringVar()
+            var.trace_add("write", lambda *_: self.render_output())
+            ttk.Entry(ids, textvariable=var, width=22).pack(side="left", padx=(4, 12))
+            self.out_ids[key] = var
+        ttk.Button(ids, text="Fill from wizard", command=self.fill_ids).pack(side="left")
+        self.out_text = tk.Text(self, height=9, font=("Consolas", 9))
+        self.app.dark_aware_texts.append(self.out_text)
+        self.out_text.pack(fill="x", padx=20, pady=(0, 4))
+        self.out_warn = ttk.Label(self, text="", foreground="#c0392b", wraplength=900, justify="left")
+        self.out_warn.pack(anchor="w", padx=20)
+        ttk.Label(self, text="Double-click a row to change that tag's register, address, data type, scale or unit (reading only: nothing is written to the PLC).",
+                  foreground="gray").pack(anchor="w", padx=20, pady=(0, 8))
+
+    def _selected_tags(self):
+        found = []
+        for iid in self.live_tree.selection():
+            if "::" not in iid:
+                continue
+            conn_name, tag_name = iid.split("::", 1)
+            conn = self.app.connections.get(conn_name)
+            tag = next((t for t in conn.tags if t["name"] == tag_name), None) if conn else None
+            if tag:
+                found.append((conn, tag))
+        return found
+
+    def include_selected(self, name=None):
+        """Tick the selected tags. One tag asks for its name in the JSON (default: the tag name); several keep their tag names."""
+        chosen = self._selected_tags()
+        if not chosen:
+            messagebox.showinfo("Select a row", "Select one or more rows first.")
+            return
+        if len(chosen) == 1:
+            conn, tag = chosen[0]
+            if name is None:
+                name = simpledialog.askstring("Name in the output JSON", "Name to show in \"data\" (for example: machine status):",
+                                              initialvalue=tag.get("output") or tag["name"], parent=self)
+            if not name or not name.strip():
+                return
+            tag["output"] = name.strip()
+        else:
+            for conn, tag in chosen:
+                tag["output"] = tag.get("output") or tag["name"]
+        self.refresh()
+
+    def remove_selected(self):
+        for conn, tag in self._selected_tags():
+            tag.pop("output", None)
+        self.refresh()
+
+    def fill_ids(self):
+        screen = self.app.screens.get("commission")
+        answers = screen.collect_answers() if screen else {}
+        for key in output_json.KEYS:
+            if answers.get(key):
+                self.out_ids[key].set(answers[key])
+
+    def render_output(self):
+        if not hasattr(self, "out_text"):
+            return
+        fallback = self.app.screens["output"].commission_ids() if "output" in self.app.screens else {}
+        ids = {k: (v.get().strip() or fallback.get(k, "")) for k, v in self.out_ids.items()}
+        payload, warnings = output_json.build_output(ids, self.app.connections, self.out_mode.get())
+        self.out_text.delete("1.0", "end")
+        self.out_text.insert("1.0", output_json.to_text(payload))
+        self.out_warn.configure(text="\n".join(warnings))
+
+    def copy_output(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.out_text.get("1.0", "end").strip())
+
+    def edit_selected_tag(self):
+        selected = self.live_tree.selection()
+        if not selected or "::" not in selected[0]:
+            return None
+        conn_name, tag_name = selected[0].split("::", 1)
+        conn = self.app.connections.get(conn_name)
+        tag = next((t for t in conn.tags if t["name"] == tag_name), None) if conn else None
+        if not tag:
+            return None
+        if conn.protocol == "s7comm":
+            def saved():
+                self.app.restart_poller(conn)
+                self.refresh()
+                if "connections" in self.app.screens:
+                    self.app.screens["connections"].refresh()
+            return self.app.screens["connections"]._s7_guided_dialog(self, conn, saved, existing=tag)
+        return self.edit_tag_dialog(conn, tag)
+
+    def edit_tag_dialog(self, conn, tag):
+        """Change how a tag is READ (data type, scale, offset, unit) while it is being polled. Nothing is ever written to the PLC."""
+        win = tk.Toplevel(self)
+        win.title(f"Edit tag -- {tag['name']}")
+        win.geometry("420x300")
+        ttk.Label(win, text=f"{conn.name}:  {tag['name']}   ({format_address(conn.protocol, tag)})", font=("Segoe UI", 10, "bold")).pack(
+            anchor="w", padx=10, pady=(10, 8))
+        options = ["bit"] if tag.get("data_type") == "bit" else [o for o in FIELD_OPTIONS["data_type"]["options"] if o != "bit"]
+        vars_ = {"data_type": tk.StringVar(value=str(tag.get("data_type", options[0]))),
+                 "multiplier": tk.StringVar(value=str(tag.get("multiplier", 1.0))),
+                 "offset": tk.StringVar(value=str(tag.get("offset", 0.0))),
+                 "unit": tk.StringVar(value=str(tag.get("unit", "")))}
+        for row, (key, label) in enumerate((("data_type", "Data type"), ("multiplier", "Scale (x)"), ("offset", "Offset (+)"), ("unit", "Unit"))):
+            frame = ttk.Frame(win)
+            frame.pack(fill="x", padx=10, pady=3)
+            ttk.Label(frame, text=label, width=12).pack(side="left")
+            if key == "data_type":
+                ttk.Combobox(frame, textvariable=vars_[key], values=options, state="readonly", width=18).pack(side="left")
+            else:
+                ttk.Entry(frame, textvariable=vars_[key], width=20).pack(side="left")
+        ttk.Label(win, text="The value shown is: raw value x scale + offset. A 32-bit type reads 4 bytes from the same address.",
+                  foreground="gray", wraplength=390, justify="left").pack(anchor="w", padx=10, pady=(8, 0))
+
+        def save():
+            try:
+                tag["multiplier"] = float(vars_["multiplier"].get() or 1)
+                tag["offset"] = float(vars_["offset"].get() or 0)
+            except ValueError:
+                messagebox.showerror("Not a number", "Scale and offset must be numbers")
+                return
+            tag["data_type"] = vars_["data_type"].get()
+            if vars_["unit"].get().strip():
+                tag["unit"] = vars_["unit"].get().strip()
+            else:
+                tag.pop("unit", None)
+            conn.latest_values.pop(tag["name"], None)
+            self.app.restart_poller(conn)
+            self.refresh()
+            win.destroy()
+
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=10, pady=14)
+        ttk.Button(row, text="Save", command=save).pack(side="right", padx=4)
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right", padx=4)
+        return win
 
     def refresh(self):
+        for child in self.health_frame.winfo_children():
+            child.destroy()
+        kept = self.live_tree.selection()            # a refresh must not drop the rows the user just selected
         self.live_tree.delete(*self.live_tree.get_children())
         for conn in self.app.connections.values():
-            tag_lookup = {t["name"]: t for t in conn.tags}
-            for tag_name, value in conn.latest_values.items():
-                tag_fields = tag_lookup.get(tag_name, {})
-                address_str = format_address(conn.protocol, tag_fields)
-                data_type = tag_fields.get("data_type", "")
-                iid = f"{conn.name}::{tag_name}"
-                self.live_tree.insert("", "end", iid=iid, values=(
-                    conn.name, PROTOCOL_LABELS.get(conn.protocol, conn.protocol), tag_name,
-                    address_str, data_type, value, conn.last_updated.get(tag_name, "")
-                ))
+            colour, text = connection_health(conn.status, getattr(conn, "health", None), len(conn.tags))
+            health = getattr(conn, "health", None) or {}
+            extra = f"   polls {health['polls']}, failed reads {health['errors']}" if health.get("polls") else ""
+            ttk.Label(self.health_frame, text=f"\u25cf {conn.name}: {text}{extra}",
+                      foreground=HEALTH_COLOURS[colour]).pack(anchor="w")
+            bad = health.get("bad", {})
+            for tag_fields in conn.tags:                     # every tag, also the ones that have no value yet or cannot be read
+                tag_name = tag_fields["name"]
+                has_value = tag_name in conn.latest_values and tag_name not in bad
+                quality = "Good" if has_value else ("Bad" if (tag_name in bad or health.get("polls")) else "--")
+                self.live_tree.insert("", "end", iid=f"{conn.name}::{tag_name}",
+                                      tags=(("green" if has_value else "red" if quality == "Bad" else "grey"),), values=(
+                    ("\u2713 " + tag_fields["output"]) if tag_fields.get("output") else "",
+                    conn.name, tag_name, format_address(conn.protocol, tag_fields), tag_fields.get("data_type", ""),
+                    show_value(conn.latest_values.get(tag_name, "")) if has_value else "", quality,
+                    conn.last_updated.get(tag_name, ""), bad.get(tag_name, "")))
+        still = [i for i in kept if self.live_tree.exists(i)]
+        if still:
+            self.live_tree.selection_set(still)
+        self.render_output()
 
 
 # --- Output (JSON template + MQTT) -------------------------------------------
@@ -1947,8 +3077,9 @@ class OutputScreen(ttk.Frame):
 
         ttk.Label(
             tmpl_frame,
-            text='Edit this JSON freely. Placeholders "__DEVICE_ID__", "__TIMESTAMP__", '
-                 '"__METRICS__" get replaced with live data wherever you put them.',
+            text='Edit this JSON freely. Placeholders "__DEPLOYMENT_ID__", "__GATEWAY_ID__", "__MACHINE_ID__" (from the Commissioning '
+                 'answers), "__DEVICE_ID__", "__TIMESTAMP__" and "__METRICS__" get replaced wherever you put them. If you ticked tags on Live '
+                 'values / Scan results, __METRICS__ holds only those, under the names you gave.',
             wraplength=1000, foreground="gray", justify="left",
         ).pack(anchor="w", padx=4, pady=(4, 0))
 
@@ -1957,7 +3088,10 @@ class OutputScreen(ttk.Frame):
         self.template_text.insert("1.0", DEFAULT_TEMPLATE)
         self.template_text.pack(fill="x", padx=4, pady=4)
 
-        ttk.Button(tmpl_frame, text="Preview JSON Now", command=self.preview_json_now).pack(anchor="w", padx=4, pady=(0, 6))
+        btns = ttk.Frame(tmpl_frame)
+        btns.pack(anchor="w", padx=4, pady=(0, 6))
+        ttk.Button(btns, text="Preview JSON Now", command=self.preview_json_now).pack(side="left")
+        ttk.Button(btns, text="Use the commissioning layout", command=self.use_commissioning_layout).pack(side="left", padx=6)
 
         mqtt_frame = ttk.LabelFrame(root, text="MQTT / Cloud publish (TLS + mTLS + AWS IoT Core compatible)")
         mqtt_frame.pack(fill="x", padx=20, pady=6)
@@ -1975,6 +3109,37 @@ class OutputScreen(ttk.Frame):
         self.mqtt_use_tls = tk.BooleanVar(value=True)
         ttk.Checkbutton(mrow2, text="Use TLS", variable=self.mqtt_use_tls).pack(side="left", padx=12)
 
+        mrow3 = ttk.Frame(mqtt_frame)
+        mrow3.pack(fill="x", padx=4, pady=2)
+        ttk.Label(mrow3, text="Client ID (empty = a random one)").pack(side="left")
+        self.mqtt_client_id = ttk.Entry(mrow3, width=22)
+        self.mqtt_client_id.pack(side="left", padx=(4, 12))
+        ttk.Label(mrow3, text="QoS").pack(side="left")
+        self.mqtt_qos = ttk.Combobox(mrow3, state="readonly", width=18, values=[l for _, l in QOS_CHOICES])
+        self.mqtt_qos.current(1)
+        self.mqtt_qos.pack(side="left", padx=(4, 12))
+        self.mqtt_retain = tk.BooleanVar(value=False)
+        ttk.Checkbutton(mrow3, text="Retain", variable=self.mqtt_retain).pack(side="left", padx=6)
+        self.mqtt_clean = tk.BooleanVar(value=True)
+        ttk.Checkbutton(mrow3, text="Clean session", variable=self.mqtt_clean).pack(side="left", padx=6)
+
+        mrow4 = ttk.Frame(mqtt_frame)
+        mrow4.pack(fill="x", padx=4, pady=2)
+        self.mqtt_keepalive = self._labeled_entry(mrow4, "Keep-alive (s)", "30")
+        self.mqtt_keepalive.configure(width=6)
+        ttk.Label(mrow4, text="MQTT version").pack(side="left")
+        self.mqtt_version = ttk.Combobox(mrow4, state="readonly", width=12, values=[l for _, l in MQTT_VERSIONS])
+        self.mqtt_version.current(0)
+        self.mqtt_version.pack(side="left", padx=(4, 12))
+        ttk.Label(mrow4, text="TLS version").pack(side="left")
+        self.mqtt_tls = ttk.Combobox(mrow4, state="readonly", width=34, values=[l for _, l in TLS_CHOICES])
+        self.mqtt_tls.current(0)
+        self.mqtt_tls.pack(side="left", padx=(4, 12))
+        self.mqtt_verify = tk.BooleanVar(value=True)
+        ttk.Checkbutton(mqtt_frame, text="Verify the broker's certificate (recommended)", variable=self.mqtt_verify).pack(anchor="w", padx=8)
+
+        ttk.Label(mqtt_frame, text="TLS 1.0 / 1.1 are old and insecure; a modern system may refuse them. Switching the certificate check off proves nothing about "
+                                   "who answers: use it only for a test broker.", foreground="gray", wraplength=1000, justify="left").pack(anchor="w", padx=4)
         ttk.Label(mqtt_frame, text="CA cert (required for AWS IoT Core: AmazonRootCA1.pem)").pack(anchor="w", padx=4)
         self.mqtt_ca_cert = self._file_picker_row(mqtt_frame)
         ttk.Label(mqtt_frame, text="Client cert (mTLS device certificate)").pack(anchor="w", padx=4)
@@ -1990,7 +3155,7 @@ class OutputScreen(ttk.Frame):
         self.mqtt_disconnect_btn.pack(side="left", padx=4)
         self.mqtt_publish_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(mctrl, text="Actually publish each merge cycle", variable=self.mqtt_publish_var).pack(side="left", padx=12)
-        self.mqtt_status_label = ttk.Label(mctrl, text="Status: not connected", foreground="gray")
+        self.mqtt_status_label = ttk.Label(mctrl, text="Status: not connected", foreground="gray", wraplength=480, justify="right")
         self.mqtt_status_label.pack(side="right", padx=4)
 
         log_frame = ttk.LabelFrame(root, text="JSON send log")
@@ -2034,7 +3199,20 @@ class OutputScreen(ttk.Frame):
         ttk.Button(row, text="Browse...", command=browse).pack(side="left")
         return entry
 
+    def commission_ids(self):
+        """deployment_id / gateway_id / machine_id as answered on the Commissioning screen (read live, nothing to save first)."""
+        screen = self.app.screens.get("commission")
+        answers = screen.collect_answers() if screen else {}
+        return {k: answers.get(k, "") for k in output_json.KEYS}
+
+    def use_commissioning_layout(self):
+        self.template_text.delete("1.0", "end")
+        self.template_text.insert("1.0", DEFAULT_TEMPLATE)
+        self.preview_json_now()
+
     def _current_metrics(self):
+        if output_json.ticked(self.app.connections):       # tags ticked on Live values / Scan results: only those, under their chosen names
+            return output_json.build_output({}, self.app.connections, "values")[0]["data"]
         if self.group_by_conn.get():
             return {name: c.latest_values for name, c in self.app.connections.items() if c.latest_values}
         metrics = {}
@@ -2047,8 +3225,12 @@ class OutputScreen(ttk.Frame):
             template = json.loads(self.template_text.get("1.0", "end"))
         except json.JSONDecodeError as e:
             return None, f"Template is not valid JSON: {e}"
+        ids = self.commission_ids()
         sentinel_values = {
             "__DEVICE_ID__": self.device_id_entry.get().strip() or "AG221-Edge-01",
+            "__DEPLOYMENT_ID__": ids["deployment_id"],
+            "__GATEWAY_ID__": ids["gateway_id"],
+            "__MACHINE_ID__": ids["machine_id"],
             "__TIMESTAMP__": int(time.time()),
             "__METRICS__": self._current_metrics(),
         }
@@ -2061,6 +3243,11 @@ class OutputScreen(ttk.Frame):
             self.log_detail.insert("1.0", error)
             return
         self.log_detail.insert("1.0", json.dumps(payload, indent=2))
+        missing = [k for k, v in self.commission_ids().items() if not v.strip()]
+        if missing and any(f"__{k.upper()}__" in self.template_text.get("1.0", "end") for k in missing):
+            self.log_detail.insert("end", "\n\n(Empty because not answered on the Commissioning screen: " + ", ".join(missing) + ".)")
+        if "__DEPLOYMENT_ID__" not in self.template_text.get("1.0", "end") and "__MACHINE_ID__" not in self.template_text.get("1.0", "end"):
+            self.log_detail.insert("end", "\n\n(This template has no commissioning IDs: press 'Use the commissioning layout'.)")
         if not self._current_metrics():
             self.log_detail.insert("end", "\n\n(No live values yet -- Start All on Connections, wait a couple of cycles.)")
 
@@ -2078,20 +3265,30 @@ class OutputScreen(ttk.Frame):
         self.mqtt_status_label.configure(text="Status: connecting...", foreground="orange")
         self.update_idletasks()
 
+        try:
+            keepalive = int(self.mqtt_keepalive.get().strip())
+        except ValueError:
+            messagebox.showerror("Invalid keep-alive", "Keep-alive must be a whole number of seconds")
+            return
+        pick = lambda box, choices: choices[box.current()][0] if box.current() >= 0 else choices[0][0]
         ok = self.app.mqtt.connect(
-            host=host, port=port, client_id=self.device_id_entry.get().strip(),
+            host=host, port=port, client_id=self.mqtt_client_id.get().strip(),
             username=self.mqtt_username.get().strip(), password=self.mqtt_password.get(),
             use_tls=self.mqtt_use_tls.get(),
             ca_cert=self.mqtt_ca_cert.get().strip() or None,
             client_cert=self.mqtt_client_cert.get().strip() or None,
             client_key=self.mqtt_client_key.get().strip() or None,
+            tls_version=pick(self.mqtt_tls, TLS_CHOICES), verify=self.mqtt_verify.get(),
+            qos=pick(self.mqtt_qos, QOS_CHOICES), retain=self.mqtt_retain.get(), keepalive=keepalive,
+            clean_session=self.mqtt_clean.get(), mqtt_version=pick(self.mqtt_version, MQTT_VERSIONS),
         )
         if ok:
             self.mqtt_status_label.configure(text="Status: connected", foreground="green")
             self.mqtt_connect_btn.configure(state="disabled")
             self.mqtt_disconnect_btn.configure(state="normal")
         else:
-            self.mqtt_status_label.configure(text="Status: connect failed", foreground="red")
+            self.mqtt_status_label.configure(text="Status: connect failed" + (f" -- {self.app.mqtt.last_error}" if self.app.mqtt.last_error else ""),
+                                             foreground="red")
 
     def mqtt_disconnect(self):
         self.app.mqtt.disconnect()
@@ -2174,6 +3371,8 @@ class ScanResultsScreen(ttk.Frame):
         ttk.Label(header, text="Scan results", font=("Segoe UI", 16)).pack(side="left")
         self.status_label = ttk.Label(header, text="", foreground="gray")
         self.status_label.pack(side="right")
+        self.progress_bar = ttk.Progressbar(header, length=150, maximum=1.0, mode="determinate")
+        self.progress_bar.pack(side="right", padx=(0, 10))
 
         ttk.Label(
             self,
@@ -2192,6 +3391,8 @@ class ScanResultsScreen(ttk.Frame):
         btn_row = ttk.Frame(self)
         btn_row.pack(fill="x", padx=20, pady=4)
         ttk.Button(btn_row, text="Add selected to tag list", command=self.add_selected).pack(side="left", padx=2)
+        ttk.Button(btn_row, text="Add + include in output JSON", command=lambda: self.add_selected(output=True)).pack(side="left", padx=2)
+        ttk.Button(btn_row, text="Export suggestions...", command=self.export_suggestions).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Clear all results", command=self.clear_results).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Stop running scan", command=self.stop_scan).pack(side="left", padx=2)
 
@@ -2220,13 +3421,25 @@ class ScanResultsScreen(ttk.Frame):
         self.filter_frame = ttk.Frame(self)
         self.filter_frame.pack(fill="x", padx=20, pady=(4, 4))
 
-        columns = ("connection", "job", "type", "address", "changed", "raw", "latest", "float_guess", "match")
+        use_frame = ttk.Frame(self)
+        use_frame.pack(fill="x", padx=20, pady=(0, 4))
+        ttk.Label(use_frame, text="Show:").pack(side="left", padx=(0, 8))
+        self.hint_filter = tk.StringVar(value="All results")
+        hint_box = ttk.Combobox(use_frame, textvariable=self.hint_filter, state="readonly", width=34,
+                                values=["All results", "OEE candidates (run state, counts, settings)", "Predictive candidates (trends, usage counts)"])
+        hint_box.pack(side="left")
+        hint_box.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        ttk.Label(use_frame, text="Suggestions are guesses from how a value moved during the scan: confirm them by running the machine.",
+                  foreground="gray").pack(side="left", padx=12)
+
+        columns = ("connection", "job", "type", "address", "changed", "raw", "latest", "float_guess", "hint", "match")
         self.tree = ttk.Treeview(self, columns=columns, show="headings", height=18)
         headings = [
             ("connection", "Connection", 110), ("job", "Scan job", 120), ("type", "Type", 50),
             ("address", "Address", 100), ("changed", "Changed?", 70),
             ("raw", "Raw value", 120), ("latest", "As int16", 80),
-            ("float_guess", "Possible float32", 150), ("match", "Search match", 160),
+            ("float_guess", "Possible float32 / bits on (* = changed)", 230),
+            ("hint", "Suggested use (a guess from this scan: confirm it on the machine)", 420), ("match", "Search match", 160),
         ]
         for col, label, w in headings:
             self.tree.heading(col, text=label)
@@ -2250,6 +3463,7 @@ class ScanResultsScreen(ttk.Frame):
     def update_status(self):
         running = " (running)" if self.app.scan_running else ""
         self.status_label.configure(text=f"{self.app.scan_status_text}{running}")
+        self.progress_bar["value"] = self.app.scan_progress if self.app.scan_running else 0.0
 
     def _rebuild_filters(self, distinct_types):
         for child in self.filter_frame.winfo_children():
@@ -2306,6 +3520,7 @@ class ScanResultsScreen(ttk.Frame):
         self.tree.delete(*self.tree.get_children())
         rows = sorted(self.app.scan_results, key=lambda r: not r["changed"])
         shown = 0
+        self._shown_rows = []                       # what the table shows now: the Export button exports exactly this
         for i, r in enumerate(rows):
             type_label = r.get("type_label", "?")
             if self.filter_vars and type_label not in active_types:
@@ -2314,16 +3529,25 @@ class ScanResultsScreen(ttk.Frame):
             match_text = self._search_match_text(r)
             if self.search_target is not None and match_text is None:
                 continue  # active search and this row doesn't match anything -- hide it
+            hint = hint_for_result(r)
+            wanted = {"O": "oee", "P": "predictive"}.get(self.hint_filter.get()[:1], "all")
+            if not signal_hints.matches(hint, wanted):
+                continue
 
+            self._shown_rows.append(r)
             iid = f"{r['conn_name']}::{r['job_label']}::{r['name']}::{i}"
             float_guess = r.get("float32_guess")
             float_text = f"{float_guess} (with {r.get('float32_pair_with')})" if float_guess is not None else "--"
+            if r.get("bit_area"):
+                float_text = "bits " + bits_summary(r["tag"]["area"], r.get("bits_on", []), r.get("bits_changed", []))
+            elif r["tag"].get("area") == "M" and (r.get("bits_on") or r.get("bits_changed")):
+                float_text = f"{float_text}  |  bits " + bits_summary("M", r["bits_on"], r["bits_changed"])
             raw = r.get("raw_value")
             raw_text = f"{raw} (0x{raw:04X})" if raw is not None else "--"
             self.tree.insert("", "end", iid=iid, values=(
                 r["conn_name"], r["job_label"], type_label, r["name"],
                 "Yes" if r["changed"] else "No", raw_text, r["latest"], float_text,
-                match_text or "",
+                hint_text(hint), match_text or "",
             ))
             shown += 1
 
@@ -2334,7 +3558,27 @@ class ScanResultsScreen(ttk.Frame):
         else:
             self.update_status()
 
-    def add_selected(self):
+    def export_suggestions(self):
+        """Write the suggested OEE / predictive candidates of the rows now shown to a CSV or JSON file (guesses: see the confidence column)."""
+        rows = candidates.rows_from_results(
+            getattr(self, "_shown_rows", []), lambda name: self.app.connections[name].protocol if name in self.app.connections else "",
+            format_address, hint_for_result, signal_hints.classify_bits)
+        if not rows:
+            messagebox.showinfo("Nothing to export", "No row shown has a suggestion for OEE or predictive use yet.\n"
+                                "Scan the machine while it runs (more snapshots give better suggestions), then try again.")
+            return None
+        path = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="protoprobe-candidates.csv",
+                                            filetypes=[("CSV (Excel)", "*.csv"), ("JSON", "*.json")])
+        if not path:
+            return None
+        text = candidates.to_json(rows, APP_VERSION) if path.lower().endswith(".json") else candidates.to_csv(rows)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        messagebox.showinfo("Exported", f"{len(rows)} suggestion(s) written to:\n{path}\n\nThey are guesses from the scan: confirm each on the machine.")
+        return path
+
+    def add_selected(self, output=False, output_name=None):
+        """Add the selected rows as tags. output=True also ticks them for the output JSON (Live values): one tag asks for the name."""
         sel = self.tree.selection()
         if not sel:
             messagebox.showinfo("Select rows", "Select one or more results to add first")
@@ -2347,6 +3591,7 @@ class ScanResultsScreen(ttk.Frame):
             by_iid[iid] = r
 
         added, skipped, missing_conn = 0, 0, 0
+        touched = []                                   # tags added now or already there: they get the output name
         for iid in sel:
             r = by_iid.get(iid)
             if not r:
@@ -2355,12 +3600,46 @@ class ScanResultsScreen(ttk.Frame):
             if not conn:
                 missing_conn += 1
                 continue
+            if r.get("bit_area"):
+                # I/Q rows are bits: add one bit tag per changed bit (or per bit that is on).
+                pick = r["bits_changed"] or r["bits_on"]
+                new_tags = []
+                for byte, bit in pick:
+                    nm = f"{r['tag']['area']}{byte}.{bit}"
+                    new_tags.append({"name": nm, "area": r["tag"]["area"], "db_number": r["tag"].get("db_number", 1),
+                                     "start_byte": byte, "bit_offset": bit, "data_type": "bit",
+                                     "multiplier": 1.0, "offset": 0.0, "mqtt_key": nm})
+                if not new_tags:
+                    skipped += 1
+                for tag in new_tags:
+                    old = next((t for t in conn.tags if t["name"] == tag["name"]), None)
+                    if old is not None:
+                        skipped += 1
+                        touched.append(old)
+                    else:
+                        conn.tags.append(tag)
+                        added += 1
+                        touched.append(tag)
+                continue
             tag = dict(r["tag"])
-            if any(t["name"] == tag["name"] for t in conn.tags):
+            old = next((t for t in conn.tags if t["name"] == tag["name"]), None)
+            if old is not None:
                 skipped += 1
+                touched.append(old)
                 continue
             conn.tags.append(tag)
             added += 1
+            touched.append(tag)
+
+        if output and touched:
+            if len(touched) == 1 and output_name is None:
+                output_name = simpledialog.askstring("Name in the output JSON", "Name to show in \"data\" (for example: machine status):",
+                                                     initialvalue=touched[0].get("output") or touched[0]["name"], parent=self)
+            for tag in touched:
+                name = (output_name or "").strip() if len(touched) == 1 else ""
+                tag["output"] = name or tag.get("output") or tag["name"]
+            if "live_values" in self.app.screens:
+                self.app.screens["live_values"].refresh()
 
         self.app.refresh_dashboard()
         if "connections" in self.app.screens:
@@ -2368,7 +3647,7 @@ class ScanResultsScreen(ttk.Frame):
         messagebox.showinfo(
             "Added", f"Added {added} tag(s), skipped {skipped} (already existed), "
                      f"{missing_conn} referenced a connection that no longer exists.\n"
-                     f"Check data types in Manage Tags -- the scan assumes int16."
+                     f"Check data types in Manage Tags -- the scan assumes int16 for words (I/Q rows are added as single bit tags)."
         )
 
     def clear_results(self):
@@ -2425,12 +3704,15 @@ class NetworkToolsScreen(ttk.Frame):
         self.ip_progress_label = ttk.Label(row, text="", foreground="gray")
         self.ip_progress_label.pack(side="left", padx=12)
 
-        self.ip_tree = ttk.Treeview(ip_frame, columns=("ip", "status"), show="headings", height=8)
-        self.ip_tree.heading("ip", text="IP address")
-        self.ip_tree.heading("status", text="Status")
-        self.ip_tree.column("ip", width=160, anchor="center")
-        self.ip_tree.column("status", width=160, anchor="center")
+        self.ip_tree = ttk.Treeview(ip_frame, columns=("ip", "status", "mac", "vendor", "hint"), show="headings", height=8)
+        for col, text, width, anchor in (("ip", "IP address", 120, "center"), ("status", "Status", 190, "center"), ("mac", "MAC address", 130, "center"),
+                                         ("vendor", "Vendor (IEEE list)", 180, "w"), ("hint", "What to try (a hint, not a fact)", 380, "w")):
+            self.ip_tree.heading(col, text=text)
+            self.ip_tree.column(col, width=width, anchor=anchor)
         self.ip_tree.pack(fill="both", expand=True, padx=8, pady=8)
+        self.ip_note = ttk.Label(ip_frame, text="After the sweep the PC's ARP table is read too: a device that ignores ping still answers ARP, so it shows as 'ARP only'. "
+                                 "Needs no administrator rights.", foreground="gray", wraplength=900, justify="left")
+        self.ip_note.pack(anchor="w", padx=8, pady=(0, 6))
 
         port_frame = ttk.LabelFrame(self, text="Port scanner")
         port_frame.pack(fill="both", expand=True, padx=20, pady=6)
@@ -2472,6 +3754,9 @@ class NetworkToolsScreen(ttk.Frame):
 
         self.ip_tree.delete(*self.ip_tree.get_children())
         self._ip_scanning = True
+        self._ip_done = 0
+        self._ip_found = 0
+        self._arp_extra = 0
         self.ip_scan_btn.configure(state="disabled")
         total = end - start + 1
         self.ip_progress_label.configure(text=f"Scanning 0/{total}...")
@@ -2485,41 +3770,64 @@ class NetworkToolsScreen(ttk.Frame):
 
         def ping_host(host_num):
             ip = f"{base}.{host_num}"
-            try:
-                if sys.platform.startswith("win"):
-                    cmd = ["ping", "-n", "1", "-w", "500", ip]
-                else:
-                    cmd = ["ping", "-c", "1", "-W", "1", ip]
-                result = subprocess.run(cmd, capture_output=True, timeout=2)
-                reachable = result.returncode == 0
-            except Exception:
-                reachable = False
-            return ip, reachable
+            return ip, ping_once(ip)
 
+        pinged = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
             futures = [pool.submit(ping_host, n) for n in range(start, end + 1)]
             for future in concurrent.futures.as_completed(futures):
-                self._ip_queue.put(future.result())
+                result = future.result()
+                pinged[result[0]] = result[1]
+                self._ip_queue.put(result)
+        # The pings filled this PC's ARP table: read it (hidden, read-only) and hand it over with the ping results.
+        self._ip_queue.put({"arp": arpscan.read_arp_table(hidden_kwargs=hidden_subprocess_kwargs()), "pinged": pinged, "prefix": f"{base}."})
         self._ip_queue.put(None)  # sentinel: scan complete
 
     def _pump_ip_queue(self, total):
-        done_count = 0
         try:
             while True:
                 item = self._ip_queue.get_nowait()
                 if item is None:
                     self._ip_scanning = False
                     self.ip_scan_btn.configure(state="normal")
-                    self.ip_progress_label.configure(text=f"Done -- {total} addresses checked")
+                    extra = getattr(self, "_arp_extra", 0)
+                    self.ip_progress_label.configure(text=f"Done -- {total} addresses checked, {self._ip_found} answered ping" + (f", {extra} more found by ARP" if extra else ""))
                     return
+                if isinstance(item, dict):
+                    self._show_arp(item)
+                    continue
                 ip, reachable = item
-                done_count += 1
+                self._ip_done += 1
                 if reachable:
-                    self.ip_tree.insert("", "end", values=(ip, "Reachable"))
+                    self._ip_found += 1
+                    self.ip_tree.insert("", "end", values=(ip, "Answers ping", "", "", ""))
         except queue.Empty:
             pass
         if self._ip_scanning:
+            self.ip_progress_label.configure(text=f"Scanning {self._ip_done}/{total}... {self._ip_found} reachable so far")
             self.after(150, lambda: self._pump_ip_queue(total))
+
+    def _oui(self):
+        """The IEEE vendor list, loaded once from the first oui.csv found (next to the workspace, then next to the program); {} when there is none."""
+        if not hasattr(self, "_oui_table"):
+            self._oui_table = {}
+            for path in arpscan.default_oui_paths(os.path.dirname(workspace.default_path())):
+                if os.path.exists(path):
+                    self._oui_table = arpscan.load_oui(path)
+                    break
+        return self._oui_table
+
+    def _show_arp(self, item):
+        """Replace the ping-only rows with the joined table: ping answers + ARP table + vendor."""
+        oui = self._oui()
+        rows = arpscan.merge(item["pinged"], item["arp"], oui, item["prefix"])
+        self.ip_tree.delete(*self.ip_tree.get_children())
+        for r in rows:
+            self.ip_tree.insert("", "end", values=(r["ip"], r["status"], r["mac"], r["vendor"], r["hint"]))
+        self._arp_extra = sum(1 for r in rows if r["status"].startswith("ARP only"))
+        if not oui:
+            self.ip_note.configure(text="Vendor names are missing: put the IEEE list (oui.csv, from the IEEE Registration Authority) in "
+                                   f"{os.path.dirname(workspace.default_path())} . Until then the vendor column says '(no vendor list)'.")
 
     def start_port_scan(self):
         if self._port_scanning:
@@ -2597,6 +3905,189 @@ class PlaceholderScreen(ttk.Frame):
 
 # --- Settings ------------------------------------------------------------------
 
+class ModbusTestScreen(ttk.Frame):
+    """A ModScan-style Modbus TCP master for testing a device on site (modbus_scan.py). READ ONLY: functions 1 to 4, nothing is ever written."""
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.stats = modbus_scan.Stats()
+        self._queue = queue.Queue()
+        self._polling = False
+        self._busy = False
+        self._stop_sweep = False
+        self._tid = 0
+        ttk.Label(self, text="Modbus test", font=("Segoe UI", 16)).pack(anchor="w", padx=20, pady=(20, 2))
+        ttk.Label(self, foreground="gray", wraplength=1000, justify="left",
+                  text="Read a Modbus TCP device the way ModScan does: see the registers in decimal, hex, binary and as 32-bit numbers, the raw bytes, "
+                       "the device's error in words, and find which unit IDs answer. Reading only: there is no write function in this tool.").pack(anchor="w", padx=20)
+        form = ttk.Frame(self)
+        form.pack(fill="x", padx=20, pady=8)
+        self.host = self._entry(form, "IP address", "", 16)
+        self.port = self._entry(form, "Port", "502", 6)
+        self.unit = self._entry(form, "Unit ID", "1", 5)
+        ttk.Label(form, text="Function").pack(side="left")
+        self.fn = ttk.Combobox(form, state="readonly", width=24, values=list(modbus_scan.FUNCTIONS.values()))
+        self.fn.current(2)
+        self.fn.pack(side="left", padx=(2, 10))
+        form2 = ttk.Frame(self)
+        form2.pack(fill="x", padx=20, pady=(0, 6))
+        self.start = self._entry(form2, "Start address", "0", 7)
+        self.count = self._entry(form2, "Count", "10", 5)
+        self.base = tk.IntVar(value=0)
+        ttk.Label(form2, text="Address base").pack(side="left")
+        ttk.Radiobutton(form2, text="0", variable=self.base, value=0, command=self._redraw).pack(side="left")
+        ttk.Radiobutton(form2, text="1", variable=self.base, value=1, command=self._redraw).pack(side="left", padx=(0, 10))
+        ttk.Label(form2, text="32-bit order").pack(side="left")
+        self.order = ttk.Combobox(form2, state="readonly", width=22, values=list(modbus_scan.WORD_ORDERS.values()))
+        self.order.current(0)
+        self.order.bind("<<ComboboxSelected>>", lambda e: self._redraw())
+        self.order.pack(side="left", padx=(2, 10))
+        self.timeout = self._entry(form2, "Timeout (s)", "2", 4)
+        self.every = self._entry(form2, "Poll every (s)", "1", 4)
+        btns = ttk.Frame(self)
+        btns.pack(fill="x", padx=20, pady=4)
+        ttk.Button(btns, text="Read once", command=self.read_once).pack(side="left")
+        self.poll_btn = ttk.Button(btns, text="Start polling", command=self.toggle_poll)
+        self.poll_btn.pack(side="left", padx=6)
+        ttk.Button(btns, text="Find unit IDs (1-247)", command=self.sweep).pack(side="left")
+        ttk.Button(btns, text="Reset counters", command=self.reset_stats).pack(side="left", padx=6)
+        ttk.Button(btns, text="Copy table", command=self.copy_table).pack(side="right")
+        self.status = ttk.Label(self, text="", foreground="gray", wraplength=1000, justify="left")
+        self.status.pack(anchor="w", padx=20)
+        self.stats_label = ttk.Label(self, text=self.stats.line(), foreground="gray")
+        self.stats_label.pack(anchor="w", padx=20)
+        cols = ("address", "unsigned", "signed", "hex", "binary", "uint32", "int32", "float32")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=12)
+        for col, w in (("address", 70), ("unsigned", 80), ("signed", 80), ("hex", 80), ("binary", 150), ("uint32", 100), ("int32", 100), ("float32", 110)):
+            self.tree.heading(col, text=col + (" (with next)" if col in ("uint32", "int32", "float32") else ""))
+            self.tree.column(col, width=w, anchor="center", stretch=False)
+        self.tree.pack(fill="both", expand=True, padx=20, pady=6)
+        self.raw = tk.Text(self, height=4, font=("Consolas", 9))
+        self.app.dark_aware_texts.append(self.raw)
+        self.raw.pack(fill="x", padx=20, pady=(0, 10))
+        self._last = None
+        self.after(150, self._pump)
+
+    def _entry(self, parent, label, default, width):
+        ttk.Label(parent, text=label).pack(side="left")
+        e = ttk.Entry(parent, width=width)
+        e.insert(0, default)
+        e.pack(side="left", padx=(2, 10))
+        return e
+
+    def _params(self):
+        try:
+            fn = list(modbus_scan.FUNCTIONS)[self.fn.current()]
+            return dict(host=self.host.get().strip(), port=int(self.port.get()), unit=int(self.unit.get()), fn=fn, start=int(self.start.get()),
+                        count=int(self.count.get()), timeout=float(self.timeout.get()))
+        except ValueError:
+            self.status.configure(text="Port, unit, start, count and timeout must be numbers.", foreground="#c0392b")
+            return None
+
+    def read_once(self):
+        p = self._params()
+        if not p or self._busy:
+            return
+        if not p["host"]:
+            self.status.configure(text="Enter the device's IP address first.", foreground="#c0392b")
+            return
+        try:
+            modbus_scan.build_request(1, p["unit"], p["fn"], p["start"], p["count"])
+        except ValueError as exc:
+            self.status.configure(text=str(exc), foreground="#c0392b")
+            return
+        self._busy = True
+        self._tid += 1
+        tid = self._tid
+
+        def work():
+            try:
+                res = modbus_scan.read(p["host"], p["port"], p["unit"], p["fn"], p["start"], p["count"], p["timeout"], self.stats, tid)
+                self._queue.put(("ok", p, res))
+            except modbus_scan.ModbusError as exc:
+                self._queue.put(("error", p, exc))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pump(self):
+        try:
+            while True:
+                kind, p, payload = self._queue.get_nowait()
+                if kind == "sweep":
+                    self.status.configure(text=payload, foreground="gray")
+                    continue
+                self._busy = False
+                if kind == "ok":
+                    self._last = (p, payload["values"])
+                    self.status.configure(text=f"OK: {len(payload['values'])} value(s) in {payload['ms']:.0f} ms", foreground="#27ae60")
+                    self._show_raw(payload["request"], payload["response"])
+                    self._redraw()
+                else:
+                    self.status.configure(text=str(payload), foreground="#c0392b")
+                    self._show_raw(getattr(payload, "request", b""), getattr(payload, "response", b""))
+                self.stats_label.configure(text=self.stats.line())
+        except queue.Empty:
+            pass
+        if self._polling and not self._busy:
+            self.read_once()
+        try:
+            self.after(max(150, int(float(self.every.get() or 1) * 1000)) if self._polling else 150, self._pump)
+        except ValueError:
+            self.after(1000, self._pump)
+
+    def _show_raw(self, req, resp):
+        self.raw.delete("1.0", "end")
+        self.raw.insert("1.0", "Request : " + modbus_scan.hexdump(req) + "\nResponse: " + (modbus_scan.hexdump(resp) if resp else "(none)"))
+
+    def _redraw(self):
+        self.tree.delete(*self.tree.get_children())
+        if not self._last:
+            return
+        p, values = self._last
+        order = list(modbus_scan.WORD_ORDERS)[self.order.current()]
+        if p["fn"] in (1, 2):
+            self.tree.configure(columns=("address", "unsigned"))
+            self.tree.heading("address", text="address")
+            self.tree.heading("unsigned", text="value")
+            for r in modbus_scan.describe_bits(values, p["start"], self.base.get()):
+                self.tree.insert("", "end", values=(r["address"], r["value"]))
+            return
+        self.tree.configure(columns=("address", "unsigned", "signed", "hex", "binary", "uint32", "int32", "float32"))
+        for col in ("address", "unsigned", "signed", "hex", "binary", "uint32", "int32", "float32"):
+            self.tree.heading(col, text=col + (" (with next)" if col in ("uint32", "int32", "float32") else ""))
+        for r in modbus_scan.describe_words(values, p["start"], self.base.get(), order):
+            f = r["float32"]
+            self.tree.insert("", "end", values=(r["address"], r["unsigned"], r["signed"], r["hex"], r["binary"],
+                                                "" if r["uint32"] is None else r["uint32"], "" if r["int32"] is None else r["int32"],
+                                                "" if f is None else f"{f:.6g}"))
+
+    def toggle_poll(self):
+        self._polling = not self._polling
+        self.poll_btn.configure(text="Stop polling" if self._polling else "Start polling")
+
+    def reset_stats(self):
+        self.stats = modbus_scan.Stats()
+        self.stats_label.configure(text=self.stats.line())
+
+    def copy_table(self):
+        lines = ["\t".join(self.tree["columns"])] + ["\t".join(str(v) for v in self.tree.item(i)["values"]) for i in self.tree.get_children()]
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(lines))
+
+    def sweep(self):
+        p = self._params()
+        if not p or not p["host"]:
+            self.status.configure(text="Enter the IP address first.", foreground="#c0392b")
+            return
+        self.status.configure(text="Asking unit IDs 1 to 247 (a silent one waits 0.6 s)...", foreground="gray")
+
+        def work():
+            found = modbus_scan.sweep_units(p["host"], p["port"], range(1, 248), p["fn"], p["start"], 0.6,
+                                            progress=lambda n, total: self._queue.put(("sweep", p, f"Asking unit IDs... {n} of {total}")) if n % 20 == 0 else None)
+            text = ("Unit IDs that answered: " + "; ".join(f"{u} ({why})" for u, why in found)) if found else "No unit ID answered."
+            self._queue.put(("sweep", p, text))
+        threading.Thread(target=work, daemon=True).start()
+
+
 class SettingsScreen(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent)
@@ -2668,6 +4159,7 @@ class App(tk.Tk):
         self.scan_out_queue = queue.Queue()
         self.scan_status_text = "Idle -- no scan running"
         self.scan_running = False
+        self.scan_progress = 0.0            # 0..1 of the job being read (all its snapshots)
         self.scan_stop_event = threading.Event()
 
         self._set_window_icon()
@@ -2698,6 +4190,8 @@ class App(tk.Tk):
                 kind, data = self.scan_out_queue.get_nowait()
                 if kind == "status":
                     self.scan_status_text = data
+                elif kind == "progress":
+                    self.scan_progress = data
                 elif kind == "results":
                     conn_name, job_label, results = data
                     for r in results:
@@ -2710,11 +4204,17 @@ class App(tk.Tk):
                             "raw_value": r.get("raw_value"),
                             "type_label": r.get("type_label", "?"),
                             "candidates_32bit": r.get("candidates_32bit", {}),
+                            "bit_area": r.get("bit_area", False),
+                            "values": r.get("values", []),
+                            "bits_series": r.get("bits_series", {}),
+                            "bits_on": r.get("bits_on", []),
+                            "bits_changed": r.get("bits_changed", []),
                         })
                     if "scan_results" in self.screens:
                         self.screens["scan_results"].refresh()
                 elif kind == "job_done":
                     self.scan_running = False
+                    self.scan_progress = 0.0
                     self.scan_status_text = "Done"
                 if "scan_results" in self.screens:
                     self.screens["scan_results"].update_status()
@@ -2756,7 +4256,10 @@ class App(tk.Tk):
     def _build_menu(self):
         menubar = tk.Menu(self)
         file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Exit", command=self.destroy)
+        file_menu.add_command(label="Open workspace...", command=self.open_workspace_file)
+        file_menu.add_command(label="Save workspace as...", command=self.save_workspace_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
         menubar.add_cascade(label="File", menu=file_menu)
         help_menu = tk.Menu(menubar, tearoff=0)
         help_menu.add_command(label="About ProtoProbe", command=self.show_about)
@@ -2827,6 +4330,7 @@ class App(tk.Tk):
         self.screens["output"] = OutputScreen(content, self)
         self.output_screen = self.screens["output"]
         self.screens["network"] = NetworkToolsScreen(content, self)
+        self.screens["modbus_test"] = ModbusTestScreen(content, self)
         self.screens["settings"] = SettingsScreen(content, self)
 
         for screen in self.screens.values():
@@ -2861,6 +4365,110 @@ class App(tk.Tk):
             metrics.update(c.latest_values)
         return metrics
 
+    # ---- the workspace: connections and tags remembered between sessions (opt-in from main(), so tests never touch a real profile) ----
+    workspace_file = None
+    _workspace_blocked = False
+    _workspace_last = None
+
+    def _workspace_dict(self):
+        return workspace.snapshot(self.connections.values(), APP_VERSION)
+
+    @staticmethod
+    def _workspace_key(data):
+        return json.dumps({k: v for k, v in data.items() if k != "saved_at"}, sort_keys=True)
+
+    def _apply_workspace(self, data):
+        """Replace the connections with those of a loaded workspace; returns the warnings (what was left out and why)."""
+        found, warnings = workspace.restore(data, set(PROTOCOL_LABELS))
+        for old in self.connections.values():
+            if old.thread:
+                old.thread.stop()
+        self.connections.clear()
+        for c in found:
+            conn = Connection(c["name"], c["protocol"], c["interface"], c["plc_type"], c["enabled"], c["poll_interval_s"])
+            conn.tags = c["tags"]
+            self.connections[conn.name] = conn
+        self.screens["connections"].refresh()
+        self.refresh_dashboard()
+        return warnings
+
+    def enable_workspace(self, path=None):
+        """Remember connections and tags between sessions: load the saved file now, save changes every few seconds and when the window closes."""
+        self.workspace_file = path or workspace.default_path()
+        data, message = workspace.load(self.workspace_file)
+        notes = [message] if message else []
+        if data:
+            try:
+                notes += self._apply_workspace(data)
+            except ValueError as exc:
+                self._workspace_blocked = True          # never overwrite a file this version does not understand
+                notes.append(f"{exc}\n\nNothing will be saved over it in this session.")
+        self._workspace_last = self._workspace_key(self._workspace_dict())
+        if notes:
+            messagebox.showwarning("Workspace", "\n\n".join(notes))
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(5000, self._autosave_tick)
+
+    def _save_workspace_now(self):
+        if not self.workspace_file or self._workspace_blocked:
+            return False
+        data = self._workspace_dict()
+        key = self._workspace_key(data)
+        if key == self._workspace_last:
+            return False
+        try:
+            workspace.save_atomic(self.workspace_file, data)
+        except OSError as exc:
+            if not getattr(self, "_workspace_error_shown", False):
+                self._workspace_error_shown = True
+                messagebox.showwarning("Workspace not saved", f"Could not save {self.workspace_file}:\n{exc}")
+            return False
+        self._workspace_last = key
+        return True
+
+    def _autosave_tick(self):
+        self._save_workspace_now()
+        self.after(5000, self._autosave_tick)
+
+    def _on_close(self):
+        self._save_workspace_now()
+        self.destroy()
+
+    def open_workspace_file(self):
+        path = filedialog.askopenfilename(filetypes=[("ProtoProbe workspace", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        data, message = workspace.load(path)
+        if data is None:
+            messagebox.showerror("Open workspace", message or "That file could not be read.")
+            return
+        if self.connections and not messagebox.askyesno("Open workspace", "Replace the current connections and tags with this file?"):
+            return
+        try:
+            warnings = self._apply_workspace(data)
+        except ValueError as exc:
+            messagebox.showerror("Open workspace", str(exc))
+            return
+        if warnings:
+            messagebox.showwarning("Open workspace", "\n".join(warnings))
+
+    def save_workspace_as(self):
+        path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("ProtoProbe workspace", "*.json")], initialfile="workspace.json")
+        if path:
+            workspace.save_atomic(path, self._workspace_dict())
+            messagebox.showinfo("Saved", f"Workspace saved to:\n{path}")
+
+    def restart_poller(self, conn):
+        """A running poller copied the tag list when it started: after a tag changed, start a new poller for that connection so the change is read."""
+        old = conn.thread
+        if old is None or not old.is_alive():
+            return False
+        old.stop()
+        thread = PollerThread(conn, old.interval_s, self.out_queue)
+        conn.thread = thread
+        thread.start()
+        return True
+
     def _poll_queue(self):
         try:
             while True:
@@ -2870,6 +4478,12 @@ class App(tk.Tk):
                     if name in self.connections:
                         self.connections[name].status = status
                         self.refresh_dashboard()
+                elif kind == "health":
+                    name, report = data
+                    if name in self.connections:
+                        self.connections[name].health = report
+                        if "connections" in self.screens:
+                            self.screens["connections"].refresh()
                 elif kind == "values":
                     name, values, ts = data
                     if name in self.connections:
@@ -2989,4 +4603,5 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     app = App()
+    app.enable_workspace()
     app.mainloop()

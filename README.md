@@ -144,7 +144,7 @@ release. The tag must equal `v` + `APP_VERSION` or the build stops. *Run workflo
 ```
 pip install -r requirements.txt pyinstaller
 python packaging/build.py
-iscc /DAppVersion=0.3.1 packaging\protoprobe.iss      # optional: the installer, needs Inno Setup 6
+iscc /DAppVersion=0.3.2 packaging\protoprobe.iss      # optional: the installer, needs Inno Setup 6
 ```
 
 Output in `dist\`. A Windows `.exe` has to be built on Windows (the same script builds a Linux binary on Linux).

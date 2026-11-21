@@ -127,6 +127,14 @@ QUESTIONS = [
     Question("deployment_id", "Deployment ID (DP_...)"),
     Question("machine_id", "Machine ID (MC_...)", required=True),
     Question("machine_name", "Machine name on site"),
+    Question("machine_make", "Machine make (the manufacturer of the machine, if known)"),
+    Question("machine_model", "Machine model / series"),
+    Question("machine_use", "What does it do or make? (one line, for example: fills and caps bottles)"),
+    Question("production_type", "Production type", "choice", [("", "Not known"), ("discrete", "Discrete parts (one part per cycle)"),
+             ("batch", "Batch (a recipe or heat, then reset)"), ("continuous", "Continuous (flow, roll, extrusion)"), ("mixed", "Mixed")], "",
+             help="It decides what a production count means: parts, batches or length/weight."),
+    Question("ideal_cycle_s", "Ideal / nominal cycle time in seconds, if known", "number", default="",
+             help="Used to judge whether a counter's rate is plausible for the machine."),
     Question("machine_type", "What kind of machine is it?", "choice", [(k, v["label"]) for k, v in MACHINES.items()], "general", True),
     Question("plc_make", "PLC make", "choice", [("mitsubishi", "Mitsubishi (FX5U, iQ ... MC protocol)"), ("siemens", "Siemens (S7)"),
              ("modbus", "Modbus TCP device (Delta, drive, meter ...)"), ("modbus_rtu", "Modbus RTU (serial)"), ("opcua", "OPC UA server")], "mitsubishi", True),
@@ -337,9 +345,11 @@ def read_xlsx_rows(data):
     if "xl/sharedStrings.xml" in z.namelist():
         for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("m:si", _NS):
             shared.append("".join(t.text or "" for t in si.iter("{%s}t" % _NS["m"])))
-    sheets = sorted(n for n in z.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml$", n))
+    # Any worksheet file name: Excel writes sheet1.xml, other tools write Sheet1.xml or a name of their own.
+    sheets = sorted((n for n in z.namelist() if re.match(r"xl/worksheets/[^/]+\.xml$", n, re.I)),
+                    key=lambda n: [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", n)])
     if not sheets:
-        raise ValueError("no worksheet found in the file")
+        raise ValueError("no worksheet found in the file (parts in it: " + ", ".join(sorted(z.namelist())[:12]) + ")")
     rows = []
     for row in ET.fromstring(z.read(sheets[0])).iter("{%s}row" % _NS["m"]):
         cells = {}
@@ -396,6 +406,7 @@ def parse_tia_tags(rows, byte_order="ABCD"):
     col = {k: head.index(k) for k in ("name", "data type", "logical address")}
     col_comment = head.index("comment") if "comment" in head else None
     tags, skipped, seen = [], [], set()
+    bit_tags = []                       # Bool tags at an absolute bit address (%I0.0, %M10.3, %DB1.DBX4.2): read one bit each, separately from the word tags
     for r in rows[hdr_i + 1:]:
         get = lambda i: (r[i].strip() if i is not None and i < len(r) else "")
         raw_name, dtype, addr = get(col["name"]), get(col["data type"]), get(col["logical address"])
@@ -406,6 +417,14 @@ def parse_tia_tags(rows, byte_order="ABCD"):
             skipped.append((raw_name, "the name has no usable characters"))
             continue
         key = dtype.strip().lower()
+        if key == "bool":
+            mb_abs, mb_db = _TIA_ABS.match(addr), _TIA_DB.match(addr)
+            if mb_abs and mb_abs.group(4) is not None and mb_abs.group(2) == "":
+                bit_tags.append({"name": name, "raw_name": raw_name, "area": mb_abs.group(1).upper(), "db": None,
+                                 "byte": int(mb_abs.group(3)), "bit": int(mb_abs.group(4)), "address": addr, "meaning": get(col_comment)[:200]})
+            elif mb_db and mb_db.group(4) is not None and mb_db.group(2).upper() == "X":
+                bit_tags.append({"name": name, "raw_name": raw_name, "area": "DB", "db": int(mb_db.group(1)),
+                                 "byte": int(mb_db.group(3)), "bit": int(mb_db.group(4)), "address": addr, "meaning": get(col_comment)[:200]})
         if key in _TIA_UNSUPPORTED:
             skipped.append((raw_name, _TIA_UNSUPPORTED[key]))
             continue
@@ -445,7 +464,7 @@ def parse_tia_tags(rows, byte_order="ABCD"):
                      "byte_order": byte_order if words == 2 else "", "role": role, "type": ttype,
                      "unit": next((u for rx, u in _UNIT if rx.search(name)), ""), "label_type": dtype, "device_class": "",
                      "meaning": comment[:200], "renamed_from": raw_name if name != raw_name else ""})
-    return {"tags": tags, "skipped": skipped}
+    return {"tags": tags, "skipped": skipped, "bit_tags": bit_tags}
 
 
 # --------------------------------------------------------------------------- importing a SIMATIC Manager symbol table (S7-300/400, STEP 7 V5.x)

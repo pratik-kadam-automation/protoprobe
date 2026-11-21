@@ -23,3 +23,6 @@ Thumbs.db
 *.json.bak
 multi_plc_config.json
 fx5u_report.json
+
+# the IEEE vendor list is a large public file the user downloads; never commit it
+oui.csv

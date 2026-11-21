@@ -118,46 +118,76 @@ class CommissioningScreen(ttk.Frame):
         self._build_export()
 
     def _build_questions(self):
-        self.q_body = ttk.Frame(self.t_q)
-        self.q_body.pack(fill="both", expand=True, padx=12, pady=10)
-        for q in cm.QUESTIONS:
-            self.answer_vars[q.key] = tk.StringVar(value=q.default)
-            self.answer_vars[q.key].trace_add("write", lambda *_: self._render_questions())
+        # Bottom bar first, so it is always visible; the questions scroll above it.
         self.q_msg = ttk.Label(self.t_q, text="", foreground="#c0392b")
-        self.q_msg.pack(anchor="w", padx=14)
         bar = ttk.Frame(self.t_q)
-        bar.pack(fill="x", padx=14, pady=10)
+        bar.pack(side="bottom", fill="x", padx=14, pady=10)
+        self.q_msg.pack(side="bottom", anchor="w", padx=14)
         self.btn_test = ttk.Button(bar, text="Test connection (Mitsubishi SLMP)", command=self.test_connection)
         self.btn_test.pack(side="left")
         self.test_msg = ttk.Label(bar, text="", foreground="gray", wraplength=620, justify="left")
         self.test_msg.pack(side="left", padx=12)
         ttk.Button(bar, text="Next: readings", command=self._questions_done).pack(side="right")
+
+        holder = ttk.Frame(self.t_q)
+        holder.pack(side="top", fill="both", expand=True, padx=(12, 0), pady=(10, 0))
+        self.q_canvas = tk.Canvas(holder, highlightthickness=0, borderwidth=0)
+        sb = ttk.Scrollbar(holder, orient="vertical", command=self.q_canvas.yview)
+        self.q_canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.q_canvas.pack(side="left", fill="both", expand=True)
+        self.q_body = ttk.Frame(self.q_canvas)
+        win = self.q_canvas.create_window((0, 0), window=self.q_body, anchor="nw")
+        self.q_body.bind("<Configure>", lambda e: self.q_canvas.configure(scrollregion=self.q_canvas.bbox("all")))
+        self.q_canvas.bind("<Configure>", lambda e: self.q_canvas.itemconfigure(win, width=e.width))
+
+        def _wheel(e):
+            if self.q_canvas.winfo_ismapped():
+                self.q_canvas.yview_scroll(-1 if (e.delta > 0 or getattr(e, "num", 0) == 4) else 1, "units")
+        self.q_canvas.bind_all("<MouseWheel>", _wheel, add="+")
+        self._q_shown = None
+        self._q_combos = {}
+        for q in cm.QUESTIONS:
+            self.answer_vars[q.key] = tk.StringVar(value=q.default)
+            self.answer_vars[q.key].trace_add("write", lambda *_: self._render_questions())
         self._render_questions()
 
-    def _render_questions(self):
+    def _render_questions(self, force=False):
+        a = self.collect_answers()
+        visible = tuple(q.key for q in cm.QUESTIONS if q.visible(a))
+        # Typing in a field must not rebuild the form (that would drop the cursor): only rebuild when the set of questions changes.
+        if visible == self._q_shown and not force:
+            for k, (cb, choices) in self._q_combos.items():  # a value set from code (practice mode) must show
+                cb.set(dict(choices).get(self.answer_vars[k].get(), self.answer_vars[k].get()))
+            return
+        self._q_shown = visible
+        self._q_combos = {}
         for w in self.q_body.winfo_children():
             w.destroy()
-        a = self.collect_answers()
+        self.q_body.columnconfigure(1, weight=1)
+        r = 0
         for q in cm.QUESTIONS:
-            if not q.visible(a):
+            if q.key not in visible:
                 continue
-            row = ttk.Frame(self.q_body)
-            row.pack(fill="x", pady=2)
-            ttk.Label(row, text=q.text + (" *" if q.required else ""), width=62, anchor="w").pack(side="left")
+            ttk.Label(self.q_body, text=q.text + (" *" if q.required else ""), wraplength=430, justify="left", anchor="w").grid(
+                row=r, column=0, sticky="w", padx=(0, 12), pady=4)
             var = self.answer_vars[q.key]
+            cell = ttk.Frame(self.q_body)
+            cell.grid(row=r, column=1, sticky="ew", pady=4)
             if q.kind == "choice":
                 labels = [lab for _, lab in q.choices]
-                cb = ttk.Combobox(row, state="readonly", width=34, values=labels)
-                cur = dict(q.choices).get(var.get(), var.get())
-                cb.set(cur)
+                cb = ttk.Combobox(cell, state="readonly", width=38, values=labels)
+                cb.set(dict(q.choices).get(var.get(), var.get()))
                 cb.bind("<<ComboboxSelected>>", lambda e, k=q.key, c=q.choices, w=cb: self._set_choice(k, c, w.get()))
-                cb.pack(side="left")
+                cb.pack(side="top", anchor="w")
+                self._q_combos[q.key] = (cb, q.choices)
             elif q.kind == "bool":
-                ttk.Checkbutton(row, variable=var, onvalue="yes", offvalue="no").pack(side="left")
+                ttk.Checkbutton(cell, variable=var, onvalue="yes", offvalue="no").pack(side="top", anchor="w")
             else:
-                ttk.Entry(row, textvariable=var, width=36).pack(side="left")
+                ttk.Entry(cell, textvariable=var, width=40).pack(side="top", anchor="w")
             if q.help:
-                ttk.Label(row, text=q.help, foreground="gray").pack(side="left", padx=8)
+                ttk.Label(cell, text=q.help, foreground="gray", wraplength=420, justify="left").pack(side="top", anchor="w")
+            r += 1
 
     def _set_choice(self, key, choices, label):
         for value, lab in choices:
