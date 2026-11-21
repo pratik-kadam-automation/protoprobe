@@ -23,6 +23,7 @@ import logging
 import operator
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -59,6 +60,7 @@ import tag_import
 import workspace
 import arpscan
 import modbus_scan
+import evidence
 
 NAV_ITEMS = [
     ("dashboard", "Dashboard"),
@@ -66,6 +68,7 @@ NAV_ITEMS = [
     ("scan_results", "Scan results"),
     ("live_values", "Live values"),
     ("commission", "Commissioning"),
+    ("evidence", "Evidence"),
     ("oee", "OEE config"),
     ("output", "Output"),
     ("network", "Network tools"),
@@ -2134,6 +2137,10 @@ class ConnectionsScreen(ttk.Frame):
                 messagebox.showinfo("Select rows", "Select one or more rows first.", parent=win)
                 return
             added, already, misfit = tag_import.add_to_connection(conn, chosen, output=output)
+            docs = self.app.__dict__.setdefault("evidence_docs", {})           # names and comments of the imported list: the Evidence screen uses them (redacted)
+            for c in chosen:
+                if tag_import.fits(conn.protocol, c) and (c["name"] or c["comment"]):
+                    docs[c["address"]] = {"name": c["name"], "comment": c["comment"]}
             self.refresh()
             self.app.refresh_dashboard()
             if "live_values" in self.app.screens:
@@ -3905,6 +3912,157 @@ class PlaceholderScreen(ttk.Frame):
 
 # --- Settings ------------------------------------------------------------------
 
+class EvidenceScreen(ttk.Frame):
+    """The evidence file for the dashboard's AI review (Commissioning page > AI review): the questionnaire answers and the candidate tags from the scan, with
+    every name, address, IP, e-mail and ID taken out (evidence.py). A person reads the exact text, ticks that it is clean, and only then can it be saved.
+    The map from the aliases (T001...) back to real addresses is shown here and stays on this computer."""
+    RAW_POINTS = 60
+
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+        self.payload = None
+        self.alias_map = {}
+        ttk.Label(self, text="Evidence for the AI review", font=("Segoe UI", 16)).pack(anchor="w", padx=20, pady=(20, 2))
+        ttk.Label(self, foreground="gray", wraplength=1000, justify="left",
+                  text="Builds the file you upload on the dashboard (Commissioning page > AI review). It holds the machine facts from the Commissioning questions and how each "
+                       "candidate tag behaved in the scan. Names, IP addresses, e-mails and IDs are removed, and tags become T001, T002... Nothing is sent from here: you "
+                       "read the exact text below, confirm it is clean, and save the file yourself.").pack(anchor="w", padx=20)
+        top = ttk.Frame(self)
+        top.pack(fill="x", padx=20, pady=8)
+        self.missing_label = ttk.Label(top, text="", foreground="#b9770e", wraplength=640, justify="left")
+        self.missing_label.pack(side="left", fill="x", expand=True)
+        ttk.Button(top, text="Open Commissioning questions", command=lambda: self.app.show_screen("commission")).pack(side="right")
+        names = ttk.Frame(self)
+        names.pack(fill="x", padx=20)
+        ttk.Label(names, text="Also remove these words (client, site, machine, people), separated by commas:").pack(side="left")
+        self.extra_names = ttk.Entry(names, width=44)
+        self.extra_names.pack(side="left", padx=6)
+        self.include_raw = tk.BooleanVar(value=True)
+        ttk.Checkbutton(self, text=f"Include a short raw excerpt of each tag (up to {self.RAW_POINTS} numbers, no names) so the dashboard can check what is claimed about it",
+                        variable=self.include_raw).pack(anchor="w", padx=20, pady=(6, 0))
+        cols = ("alias", "address", "type", "role", "use", "snapshots")
+        self.tree = ttk.Treeview(self, columns=cols, show="headings", height=6)
+        for col, label, w in (("alias", "Alias (sent)", 90), ("address", "Address (stays here)", 160), ("type", "Type", 70), ("role", "Role guess", 110),
+                              ("use", "OEE / predictive guess", 300), ("snapshots", "Snapshots", 80)):
+            self.tree.heading(col, text=label)
+            self.tree.column(col, width=w, anchor="w", stretch=False)
+        self.tree.pack(fill="x", padx=20, pady=6)
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", padx=20)
+        ttk.Button(bar, text="Build / refresh preview", command=self.refresh).pack(side="left")
+        self.approved = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="I read the preview: nothing in it identifies the client, the site or the machine", variable=self.approved,
+                        command=self._sync_buttons).pack(side="left", padx=14)
+        self.save_btn = ttk.Button(bar, text="Save evidence file...", command=self.save, state="disabled")
+        self.save_btn.pack(side="right")
+        self.copy_btn = ttk.Button(bar, text="Copy", command=self.copy, state="disabled")
+        self.copy_btn.pack(side="right", padx=6)
+        self.status = ttk.Label(self, text="", foreground="gray", wraplength=1000, justify="left")
+        self.status.pack(anchor="w", padx=20, pady=(4, 0))
+        self.text = tk.Text(self, font=("Consolas", 9), height=18)
+        self.app.dark_aware_texts.append(self.text)
+        self.text.pack(fill="both", expand=True, padx=20, pady=(4, 12))
+
+    # ---- what goes in --------------------------------------------------------------------
+    def _answers(self):
+        screen = self.app.screens.get("commission")
+        return screen.collect_answers() if screen else {}
+
+    def _hidden_names(self, answers):
+        words = [answers.get(k, "") for k in ("client", "machine_name", "machine_id", "gateway_id", "deployment_id")]
+        words += [w.strip() for w in self.extra_names.get().split(",")]
+        for conn in self.app.connections.values():          # connection names often carry the site or machine name
+            words.append(conn.name)
+        # A client name like "Acme Mills" also appears as "Acme" alone: the single words of the client and connection names (4+ letters) go too.
+        # The machine's own name is not split, so facts like "press" stay in the machine description.
+        parts = re.findall(r"[A-Za-z0-9]+", " ".join([answers.get("client", "")] + [c.name for c in self.app.connections.values()]))
+        words += [w for w in parts if len(w) >= 4 and not w.isdigit()]
+        return [w for w in words if w and len(w.strip()) >= 2]
+
+    def _rows(self):
+        return candidates.rows_from_results(
+            self.app.scan_results, lambda name: self.app.connections[name].protocol if name in self.app.connections else "",
+            format_address, hint_for_result, signal_hints.classify_bits)
+
+    def _docs(self):
+        """Names and comments from an imported Excel / PDF list, by address (stored by the Import dialog)."""
+        return {_norm_address(k): v for k, v in getattr(self.app, "evidence_docs", {}).items()}
+
+    def refresh(self):
+        answers = self._answers()
+        rows = self._rows()
+        docs = self._docs()
+        by_row_docs = {r["address"]: docs.get(_norm_address(r["address"])) for r in rows}
+        self.payload, self.alias_map = evidence.build(answers, rows, docs={k: v for k, v in by_row_docs.items() if v}, hide_names=self._hidden_names(answers),
+                                                      app_version=APP_VERSION, raw_points=self.RAW_POINTS if self.include_raw.get() else 0)
+        self.tree.delete(*self.tree.get_children())
+        for row, tag in zip(rows, self.payload["tags"]):
+            use = " / ".join(x for x in (row["oee_use"], row["predictive_use"]) if x)
+            self.tree.insert("", "end", values=(tag["alias"], f"{row['connection']}: {row['address']}", row["data_type"], row["role"], use, row["snapshots"]))
+        missing = evidence.missing_for_analysis(answers)
+        self.missing_label.configure(text=("Still unanswered (the review will ask for them): " + "; ".join(m["question"] for m in missing[:4]) +
+                                           (f" and {len(missing) - 4} more" if len(missing) > 4 else "")) if missing else "All the questions the review needs are answered.")
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", evidence.preview(self.payload))
+        self.approved.set(False)
+        self._sync_buttons()
+        if rows:
+            self.status.configure(text=f"{len(rows)} candidate tag(s). Read the whole text below, then tick the box.", foreground="gray")
+        else:
+            self.status.configure(text="No candidate tag yet: scan the machine while it runs (Scan results), then press the button again. The file would hold only the answers.",
+                                  foreground="#b9770e")
+
+    def _sync_buttons(self):
+        ok = bool(self.payload) and self.approved.get()
+        self.save_btn.configure(state="normal" if ok else "disabled")
+        self.copy_btn.configure(state="normal" if ok else "disabled")
+
+    # ---- what comes out ------------------------------------------------------------------
+    def current_text(self):
+        """What is saved: the preview exactly as shown (so what the person read is what leaves)."""
+        return self.text.get("1.0", "end").strip() + "\n"
+
+    def save(self, path=None):
+        if not (self.payload and self.approved.get()):
+            return None
+        text = self.current_text()
+        problems = evidence.leaks(text, self._hidden_names(self._answers()))
+        if problems:
+            messagebox.showerror("Not saved", "The text still has something that should be removed:\n- " + "\n- ".join(problems[:6]))
+            return None
+        try:
+            json.loads(text)
+        except ValueError as exc:
+            messagebox.showerror("Not valid JSON", f"The text was edited and is no longer valid JSON:\n{exc}")
+            return None
+        path = path or filedialog.asksaveasfilename(defaultextension=".json", initialfile="protoprobe-evidence.json", filetypes=[("Evidence file", "*.json")])
+        if not path:
+            return None
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        self.status.configure(text=f"Saved: {path}. Upload it on the dashboard (Commissioning page > AI review). The map from T001... back to addresses is the table above: it stays on this computer.",
+                              foreground="#27ae60")
+        return path
+
+    def copy(self):
+        if self.payload and self.approved.get():
+            self.clipboard_clear()
+            self.clipboard_append(self.current_text())
+
+
+def _norm_address(text):
+    """One spelling for the same place: %MW22, MW22 and M22 are the same address; DB1.DBW4 and DB1.4 too (width letters dropped)."""
+    t = str(text).replace("%", "").replace(" ", "").upper()
+    m = re.match(r"^([IQM])[BWD]?(\d+)(\.\d)?$", t)
+    if m:
+        return m.group(1) + m.group(2) + (m.group(3) or "")
+    m = re.match(r"^DB(\d+)\.DB[XBWD](\d+)(\.\d)?$", t)
+    if m:
+        return f"DB{m.group(1)}.{m.group(2)}" + (m.group(3) or "")
+    return t
+
+
 class ModbusTestScreen(ttk.Frame):
     """A ModScan-style Modbus TCP master for testing a device on site (modbus_scan.py). READ ONLY: functions 1 to 4, nothing is ever written."""
     def __init__(self, parent, app):
@@ -4327,6 +4485,7 @@ class App(tk.Tk):
         self.screens["live_values"] = LiveValuesScreen(content, self)
         self.screens["commission"] = CommissioningScreen(content, self, DRIVER_FACTORY, build_range_tags)
         self.screens["oee"] = OEEScreen(content, self)
+        self.screens["evidence"] = EvidenceScreen(content, self)
         self.screens["output"] = OutputScreen(content, self)
         self.output_screen = self.screens["output"]
         self.screens["network"] = NetworkToolsScreen(content, self)
@@ -4350,6 +4509,8 @@ class App(tk.Tk):
             self.screens["oee"].refresh()
         elif key == "scan_results":
             self.screens["scan_results"].refresh()
+        elif key == "evidence":
+            self.screens["evidence"].refresh()
 
     def refresh_dashboard(self):
         self.screens["dashboard"].refresh()
