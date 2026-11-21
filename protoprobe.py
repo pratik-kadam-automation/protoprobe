@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.3.6"
+APP_VERSION = "0.3.7"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -1435,6 +1435,7 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(btn_row, text="Manage Tags", command=self.open_tag_manager).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Read a Value", command=self.open_quick_read).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Scan for Live Tags", command=self.open_scan_dialog).pack(side="left", padx=2)
+        ttk.Button(btn_row, text="Connection doctor", command=self.open_doctor).pack(side="left", padx=2)
         ttk.Button(btn_row, text="Import tags from file...", command=self.open_import_dialog).pack(side="left", padx=2)
 
         self.conn_tree = ttk.Treeview(
@@ -2189,6 +2190,57 @@ class ConnectionsScreen(ttk.Frame):
         ttk.Button(row, text="Add + include in output JSON", command=lambda: add(True)).pack(side="left", padx=6)
         ttk.Button(row, text="Close", command=win.destroy).pack(side="right")
         return win
+
+    def open_doctor(self):
+        """Why does this connection not read? Runs doctor.run for the selected Mitsubishi connection and shows the report (copy / save)."""
+        sel = self.conn_tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a connection", "Click a connection's row above first")
+            return
+        conn = self.app.connections[sel[0]]
+        ip = conn.interface.get("ip")
+        if conn.protocol != "mc_protocol_3e" or not ip:
+            messagebox.showinfo("Connection doctor", "The doctor checks Mitsubishi MC / SLMP connections (it needs an IP address).")
+            return
+        import doctor
+        win = tk.Toplevel(self)
+        win.title(f"Connection doctor -- {conn.name}")
+        win.geometry("760x560")
+        box = tk.Text(win, wrap="word", font=("Consolas", 10))
+        box.pack(fill="both", expand=True, padx=8, pady=8)
+        box.insert("end", "Running the checks (about 10 seconds). Nothing is written to the PLC or changed on this PC...\n")
+        row = ttk.Frame(win)
+        row.pack(fill="x", padx=8, pady=(0, 8))
+        text_holder = {"text": ""}
+
+        def show(text):
+            text_holder["text"] = text
+            box.delete("1.0", "end")
+            box.insert("end", text)
+
+        def worker():
+            try:
+                result = doctor.run(ip, conn.interface.get("port") if isinstance(conn.interface.get("port"), int) else None,
+                                    conn.interface.get("transport", "tcp"))
+                text = doctor.report(result, ip)
+            except Exception as exc:              # never leave the window on "Running..."
+                text = f"The doctor could not finish: {explain_exception(exc)}"
+            win.after(0, lambda: show(text))
+
+        def copy():
+            win.clipboard_clear()
+            win.clipboard_append(text_holder["text"])
+
+        def save():
+            path = filedialog.asksaveasfilename(parent=win, defaultextension=".txt", initialfile="connection-doctor.txt")
+            if path:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text_holder["text"])
+
+        ttk.Button(row, text="Copy report", command=copy).pack(side="left", padx=2)
+        ttk.Button(row, text="Save report...", command=save).pack(side="left", padx=2)
+        ttk.Button(row, text="Close", command=win.destroy).pack(side="right", padx=2)
+        threading.Thread(target=worker, daemon=True).start()
 
     def open_quick_read(self, parent=None):
         """Read ONE value of the selected connection, the way the gateway's own interface lets you: pick the register type, enter the address,
