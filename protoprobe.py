@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
 
 APP_NAME = "ProtoProbe"
-APP_VERSION = "0.3.2"
+APP_VERSION = "0.3.3"
 APP_TAGLINE = "Multi-vendor industrial protocol diagnostics and edge gateway configuration"
 
 
@@ -1847,6 +1847,7 @@ class ConnectionsScreen(ttk.Frame):
 
             watch.bind("<Double-1>", load_selected)
             watch.bind("<Return>", load_selected)          # the same from the keyboard
+            watch.load_selected = load_selected            # so a test can call it: Windows does not deliver a generated key event to a window without focus
 
             def remove_from_list():
                 for iid in watch.selection():
