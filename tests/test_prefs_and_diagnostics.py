@@ -30,7 +30,12 @@ class Prefs(unittest.TestCase):
             self.assertEqual(prefs.load(path), {"tour_done": False})
 
     def test_unwritable_location_does_not_raise(self):
-        self.assertFalse(prefs.save("/proc/nope/prefs.json", {"tour_done": True}))
+        # portable: a FILE used as the parent folder cannot be created on Linux or Windows (a fixed path like /proc/x is writable on Windows)
+        with tempfile.TemporaryDirectory() as d:
+            blocker = os.path.join(d, "a_file")
+            with open(blocker, "w") as f:
+                f.write("x")
+            self.assertFalse(prefs.save(os.path.join(blocker, "sub", "prefs.json"), {"tour_done": True}))
 
 
 def conn(**kw):
